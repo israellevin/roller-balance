@@ -1,0 +1,62 @@
+# Creates the roller-balance Web server environment, including environment variables,
+# and activates it (which is only useful if the script is sourced).
+
+# Deactivate any running virtual environment.
+[ "$VIRTUAL_ENV" ] && deactivate 2>/dev/null
+
+# We can't fail at anything.
+set -e
+
+# Set environment variables.
+if [ -r roller.env ]; then
+    set -o allexport
+    . roller.env
+    set +o allexport
+fi
+
+# Require python3
+case "$(python3 --version)" in
+    'Python 3.9.'* | 'Python 3.1'[0-9].*);;
+    *)
+        echo Python3.9 or higher not found
+        set +e && return 1 2>/dev/null
+        return 1
+    ;;
+esac
+
+# Enable virtualenv, creating it if needed.
+deploy_dir="$(dirname "${BASH_SOURCE[0]}")"
+if ! . "$deploy_dir"/venv/bin/activate 2>/dev/null; then
+    echo No virtual environment found in ./venv/
+    read -n 1 -p'create virtual env here? (y/N) ' q; echo
+    if [ "$(tr '[:upper:]' '[:lower:]' <<<"$q")" = 'y' ]; then
+        python3 -m venv venv
+        . "$deploy_dir/venv/bin/activate"
+    else
+        echo Refusing to run without a virtual environment
+        [ "${#BASH_SOURCE[@]}" -lt 2 ] && set +e && return 2 2>/dev/null
+        return 2
+    fi
+fi
+
+# Require python packages (as specified in requirements.txt) unless the skip flag is on.
+if [ ! "$1" = '-s' ]; then
+    missing_packages="$(comm -23 <(sort requirements.txt) <(pip freeze | grep -v '0.0.0' | sort))"
+    if [ "$missing_packages" ]; then
+        echo -e "The following packages are missing:\n$missing_packages"
+        read -n 1 -p'Install missing packages? (y/N) ' q; echo
+        if [ "$(tr '[:upper:]' '[:lower:]' <<<"$q")" = 'y' ]; then
+            pip install wheel
+            pip install pycodestyle pylint
+            pip install -r requirements.txt
+        else
+            echo Refusing to run without required packages
+            [ "${#BASH_SOURCE[@]}" -lt 2 ] && set +e && return 3 2>/dev/null
+            return 3
+        fi
+    fi
+fi
+
+env | grep ROLLER_ | sort
+
+set +e
