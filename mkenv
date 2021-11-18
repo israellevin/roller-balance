@@ -14,16 +14,6 @@ if [ -r roller.env ]; then
     set +o allexport
 fi
 
-# Require python3
-case "$(python3 --version)" in
-    'Python 3.9.'* | 'Python 3.1'[0-9].*);;
-    *)
-        echo Python3.9 or higher not found
-        set +e && return 1 2>/dev/null
-        return 1
-    ;;
-esac
-
 # Enable virtualenv, creating it if needed.
 deploy_dir="$(dirname "${BASH_SOURCE[0]}")"
 if ! . "$deploy_dir"/venv/bin/activate 2>/dev/null; then

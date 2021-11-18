@@ -40,7 +40,7 @@ TRANSFER = {
             'in': 'formData', 'required': True, 'type': 'string'
         },
         {
-            'name': 'source', 'description': 'The paid address',
+            'name': 'target', 'description': 'The paid address',
             'in': 'formData', 'required': True, 'type': 'string'
         },
         {
