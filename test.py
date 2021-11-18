@@ -1,5 +1,4 @@
 'Tests for roller-balance server.'
-
 # pylint: disable=unused-import
 import pytest
 # pylint: enable=unused-import
@@ -10,7 +9,6 @@ import web
 
 LOGGER = logs.logging.getLogger('roller.test')
 ADDRESSES = [40*str(digit) for digit in range(10)]
-INVALID_ADDRESS = ADDRESSES[0][:-1]
 
 
 def initialize_test_database():
@@ -72,10 +70,21 @@ def test_data():
 def test_webserver():
     'Web server tests.'
     initialize_test_database()
+
+    # Test non debug mode.
+    web.DEBUG = False
+    with web.APP.test_client() as client:
+        error_response = client.post('/deposit', data=dict(address=ADDRESSES[0], amount=10))
+        assert error_response.status == '403 FORBIDDEN'
+        error_response = client.post('/five_hundred', data=dict(reason='exception'))
+        assert error_response.status == '403 FORBIDDEN'
+
+    # Test debug mode.
+    web.DEBUG = True
     with web.APP.test_client() as client:
         balance_response = client.post('/get_balance', data=dict(address=ADDRESSES[0]))
-        assert balance_response.json == dict(status=200, balance=0)
         assert balance_response.status == '200 OK'
+        assert balance_response.json == dict(status=200, balance=0)
 
         deposit_response = client.post('/deposit', data=dict(address=ADDRESSES[0], amount=100))
         assert deposit_response.status == '201 CREATED'
@@ -99,38 +108,61 @@ def test_webserver():
 
         assert client.post('/get_unsettled_withdrawals').status == '200 OK'
         assert client.post('/get_unsettled_withdrawals').json['unsettled_withdrawals'] != ''
-        assert client.post('/settle', data=dict(transaction_hash='fake transaction')).status == '201 CREATED'
+        assert client.post('/settle', data=dict(transaction_hash=64*'0')).status == '201 CREATED'
         assert client.post('/get_unsettled_withdrawals').json['unsettled_withdrawals'] == ''
 
         error_response = client.post('/get_balance')
         assert error_response.status == '400 BAD REQUEST'
         assert error_response.json == dict(
-                status=400, error_name='ArgumentMismatch',
-                error_message='request does not contain arguments(s): address')
+            status=400, error_name='ArgumentMismatch',
+            error_message='request does not contain arguments(s): address')
 
         error_response = client.post('/get_balance', data=dict(bad_argument='stam', address=ADDRESSES[0]))
         assert error_response.status == '400 BAD REQUEST'
         assert error_response.json == dict(
-                status=400, error_name='ArgumentMismatch',
-                error_message='request contain unexpected arguments(s): bad_argument')
+            status=400, error_name='ArgumentMismatch',
+            error_message='request contain unexpected arguments(s): bad_argument')
 
-        for bad_argument in ['string', 1.1]:
-            error_response = client.post('/deposit', data=dict(address=ADDRESSES[0], amount=bad_argument))
+        for bad_amount in ['string', 1.1]:
+            error_response = client.post('/deposit', data=dict(address=ADDRESSES[0], amount=bad_amount))
             assert error_response.status == '400 BAD REQUEST'
-            LOGGER.info(bad_argument)
-            LOGGER.info(f"argument amount has to be an integer, not a {type(bad_argument).__name__}")
-            LOGGER.info(error_response.json['error_message'])
             assert error_response.json == dict(
-                    status=400, error_name='ArgumentMismatch',
-                    error_message='argument amount has to be an integer')
+                status=400, error_name='ArgumentMismatch',
+                error_message='argument amount has to be an integer')
 
         for bad_amount in [0, -1]:
             error_response = client.post('/deposit', data=dict(address=ADDRESSES[0], amount=bad_amount))
             assert error_response.status == '400 BAD REQUEST'
-            LOGGER.info(error_response.json)
             assert error_response.json == dict(
-                    status=400, error_name='ArgumentMismatch',
-                    error_message='argument amount must be larger than zero')
+                status=400, error_name='ArgumentMismatch',
+                error_message='argument amount must be larger than zero')
+
+        for bad_address, error_message in [
+            (f"{ADDRESSES[0][:-1]}", 'argument address must be 40 characters long'),
+            (f"{ADDRESSES[0][:-1]}g", 'argument address is not a hex string')
+        ]:
+            error_response = client.post('/get_balance', data=dict(address=bad_address))
+            assert error_response.status == '400 BAD REQUEST'
+            assert error_response.json == dict(
+                status=400, error_name='ArgumentMismatch',
+                error_message=error_message)
+
+        for bad_tx_hash, error_message in [
+            (63*'0', 'argument transaction_hash must be 64 characters long'),
+            (64*'g', 'argument transaction_hash is not a hex string')
+        ]:
+            error_response = client.post('/settle', data=dict(transaction_hash=bad_tx_hash))
+            assert error_response.status == '400 BAD REQUEST'
+            assert error_response.json == dict(
+                status=400, error_name='ArgumentMismatch',
+                error_message=error_message)
+
+        assert client.post('/settle', data=dict(transaction_hash=64*'0')).status == '201 CREATED'
+
+        error_response = client.get('/five_hundred')
+        for reason in ['response', 'exception']:
+            error_response = client.post('/five_hundred', data=dict(reason=reason))
+            assert error_response.status == '500 INTERNAL SERVER ERROR'
 
         assert client.get('/no_such_endpoint').status == '403 FORBIDDEN'
 

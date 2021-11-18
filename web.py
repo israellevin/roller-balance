@@ -40,10 +40,7 @@ def make_response(status=None, error_name=None, error_message=None, **kwargs):
         else:
             kwargs['error_name'] = error_name
     if error_message is not None:
-        if isinstance(error_message, Exception):
-            kwargs['error_message'] = str(Exception)
-        else:
-            kwargs['error_message'] = error_message
+        kwargs['error_message'] = error_message
     kwargs['status'] = status or 200
     return flask.jsonify(dict(kwargs)), kwargs['status']
 
@@ -74,12 +71,21 @@ def parse_argument(key, value):
             raise ArgumentMismatch(f"argument {key} has to be an integer") from None
         if value <= 0:
             raise ArgumentMismatch(f"argument {key} must be larger than zero") from None
+    elif key in ['address', 'source', 'target', 'transaction_hash']:
+        required_length = 64 if key == 'transaction_hash' else 40
+        if len(value) != required_length:
+            raise ArgumentMismatch(f"argument {key} must be {required_length} characters long") from None
+        value = value.lower()
+        try:
+            int(value, 16)
+        except ValueError:
+            raise ArgumentMismatch(f"argument {key} is not a hex string") from None
     return value
 
 
 def parse_request(request, required_arguments):
     'Validate and parse a request.'
-    given_arguments = dict(request.view_args, **request.values.to_dict())
+    given_arguments = request.values.to_dict()
     check_arguments(required_arguments, given_arguments.keys())
     return {key: parse_argument(key, value) for key, value in given_arguments.items()}
 
@@ -112,8 +118,6 @@ def call(handler=None, required_arguments=None):
             response = dict(status=400, error_name=exception)
         except Unauthorized as exception:
             response = dict(status=403, error_name=exception)
-        except NotImplementedError as exception:
-            response = dict(status=501, error_name=exception)
         except Exception as exception:
             LOGGER.exception(f"unexpected server exception on {flask.request.url}: {request}")
             response = dict(status=500, error_name=exception, stacktrace=traceback.format_exc().split('\n'))
@@ -153,7 +157,7 @@ def withdraw_handler(address, amount):
 
 @APP.route("/get_unsettled_withdrawals", methods=['POST'])
 @flasgger.swag_from(api_spec.GET_UNSETTLED_WITHDRAWALS)
-@call()
+@call
 def get_unsettled_withdrawals_handler():
     'Get a CSV list of unsettled withdrawals.'
     return dict(status=200, unsettled_withdrawals=data.get_unsettled_withdrawals_aggregated_csv())
@@ -176,6 +180,17 @@ def deposit_handler(address, amount):
         raise Unauthorized('deposit endpoint is only available in debug mode')
     data.deposit(address, amount, 'fake deposit')
     return dict(status=201)
+
+
+@APP.route("/five_hundred", methods=['POST'])
+@call(['reason'])
+def five_hundred_handler(reason):
+    'Test our 500 reporting - only for testing, never available in production.'
+    if not DEBUG:
+        raise Unauthorized('five_hundred endpoint is only available in debug mode')
+    if reason == 'response':
+        return APP
+    raise Exception('five hundred response was requested')
 
 
 @APP.route('/')
