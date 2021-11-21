@@ -1,9 +1,12 @@
 'Tests for roller-balance server.'
+import uuid
+
 # pylint: disable=unused-import
 import pytest
 # pylint: enable=unused-import
 
 import data
+import etherscan
 import logs
 import web
 
@@ -16,21 +19,49 @@ def initialize_test_database():
     assert data.DB_NAME[-5:] == '_test', f"will not run data tests on non test database {data.DB_NAME}"
     data.nuke_database_and_create_new_please_think_twice()
 
-    # Check error handling.
-    with pytest.raises(data.pymysql.MySQLError):
-        with data.sql_connection() as sql:
-            sql.execute('bad sql')
+
+def test_data_etherscan():
+    'Test integration of data with etherscan module.'
+    initialize_test_database()
+    assert data.get_balance(data.SAFE) == 0
+    data.scan_for_deposits()
+    assert data.get_balance(data.SAFE) == -4*10**18
+
+    # To make sure we hit the same block.
+    data.scan_for_deposits()
+    data.scan_for_deposits()
+
+    # Make sure we hit old data.
+    with data.sql_connection() as sql:
+        sql.execute('UPDATE deposit_scans SET end_block = end_block + 1000')
+    data.scan_for_deposits()
+
+    # Create a duplicate transaction.
+    initialize_test_database()
+    data.deposit('fake', 1, '2735f031e4f57f7b1644d6146bafa096f4e6723250f2270b9a48d1ffd60e93e1')
+    with pytest.raises(data.ScanError):
+        data.scan_for_deposits()
+
+
+def fake_transaction_hash():
+    'Create a fake transaction hash.'
+    return f"fake-{uuid.uuid4().hex}{uuid.uuid4().hex}"[:64]
 
 
 def test_data():
     'Test data access.'
     initialize_test_database()
 
+    # Check error handling.
+    with pytest.raises(data.pymysql.MySQLError):
+        with data.sql_connection() as sql:
+            sql.execute('bad sql')
+
     # Test deposits.
     assert data.get_balance(ADDRESSES[0]) == 0
-    data.deposit(ADDRESSES[0], 1, 'fake transaction')
+    data.deposit(ADDRESSES[0], 1, fake_transaction_hash())
     assert data.get_balance(ADDRESSES[0]) == 1
-    data.deposit(ADDRESSES[0], 10, 'fake transaction')
+    data.deposit(ADDRESSES[0], 10, fake_transaction_hash())
     assert data.get_balance(ADDRESSES[0]) == 11
 
     # Test transfers.
@@ -62,7 +93,7 @@ def test_data():
         dict(idx=5, address=ADDRESSES[0], amount=4),
         dict(idx=6, address=ADDRESSES[1], amount=2)]
     assert data.get_unsettled_withdrawals_aggregated_csv() == f"{ADDRESSES[0]}, 7\n{ADDRESSES[1]}, 2"
-    assert data.settle('fake transaction') == dict(settled_transactions_count=3, unsettled_transaction_count=0)
+    assert data.settle(fake_transaction_hash()) == dict(settled_transactions_count=3, unsettled_transaction_count=0)
     assert data.get_unsettled_withdrawals() == ()
     assert data.get_unsettled_withdrawals_aggregated_csv() == ''
 
@@ -70,16 +101,6 @@ def test_data():
 def test_webserver():
     'Web server tests.'
     initialize_test_database()
-
-    # Test non debug mode.
-    web.DEBUG = False
-    with web.APP.test_client() as client:
-        error_response = client.post('/deposit', data=dict(address=ADDRESSES[0], amount=10))
-        assert error_response.status == '403 FORBIDDEN'
-        error_response = client.post('/five_hundred', data=dict(reason='exception'))
-        assert error_response.status == '403 FORBIDDEN'
-
-    # Test debug mode.
     web.DEBUG = True
     with web.APP.test_client() as client:
         balance_response = client.post('/get_balance', data=dict(address=ADDRESSES[0]))
@@ -165,6 +186,38 @@ def test_webserver():
             assert error_response.status == '500 INTERNAL SERVER ERROR'
 
         assert client.get('/no_such_endpoint').status == '403 FORBIDDEN'
+
+
+def test_prod_webserver():
+    'Some tests have to be run in a non debug node, for coverage.'
+    initialize_test_database()
+    web.DEBUG = False
+    with web.APP.test_client() as client:
+        error_response = client.post('/deposit', data=dict(address=ADDRESSES[0], amount=10))
+        assert error_response.status == '403 FORBIDDEN'
+        error_response = client.post('/five_hundred', data=dict(reason='exception'))
+        assert error_response.status == '403 FORBIDDEN'
+
+
+def test_etherscan():
+    'Test etherscan module.'
+    assert etherscan.get_latest_block_number() > 0
+
+    LOGGER.info(etherscan.get_ether_payments('7f6041155c0DB03eB2b49AbF2D61b370B4253Ef7', 9833390, 9833490))
+    assert etherscan.get_ether_payments('7f6041155c0DB03eB2b49AbF2D61b370B4253Ef7', 9833390, 9833490) == [{
+        'source': '81b7e08f65bdf5648606c89998a9cc8164397647', 'amount': 1000000000000000000,
+        'block_number': 9833391, 'transaction': 'f288c15ac4741b246922abd0bbc06727d7958a03a5e251e6449af034866d71c1'
+    }, {
+        'source': '81b7e08f65bdf5648606c89998a9cc8164397647', 'amount': 1000000000000000000,
+        'block_number': 9833392, 'transaction': '2f741098a7c33d898b16de7ec1a8bf1658a1983806e89a13bcceb40aee878ba3'}]
+
+    original_headers = etherscan.ETHERSCAN_HEADERS
+    etherscan.ETHERSCAN_HEADERS = {}
+    with pytest.raises(etherscan.EtherscanError):
+        etherscan.get_latest_block_number()
+    with pytest.raises(etherscan.EtherscanError):
+        etherscan.get_ether_payments('7f6041155c0DB03eB2b49AbF2D61b370B4253Ef7', 9833390, 9833490)
+    etherscan.ETHERSCAN_HEADERS = original_headers
 
 
 def test_logs():

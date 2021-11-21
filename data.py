@@ -1,12 +1,16 @@
 'roller-balance data handling.'
 import contextlib
+import json
 import logging
 import os
 
 import pymysql
 
+import etherscan
+
 LOGGER = logging.getLogger('roller.data')
 SAFE = os.environ.get('ROLLER_SAFE_ADDRESS', 40*'F')
+REQUIRED_BLOCK_DEPTH = 10
 DEBUG = os.environ.get('ROLLER_DEBUG', 'false').lower() in ['true', 'yes', 'y', '1']
 DB_HOST = os.environ.get('ROLLER_DB_HOST', 'localhost')
 DB_USER = os.environ.get('ROLLER_DB_USER', 'root')
@@ -16,6 +20,13 @@ DB_NAME = os.environ.get('ROLLER_DB_NAME', 'roller')
 
 class InsufficientFunds(Exception):
     'Not enough funds to perform operation.'
+
+
+class ScanError(Exception):
+    'An error when scanning for transactions.'
+    def __init__(self, message, data):
+        super().__init__(message)
+        self.data = data
 
 
 @contextlib.contextmanager
@@ -52,7 +63,7 @@ CREATE TABLE transactions(
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     source CHAR(40) NOT NULL,
     target CHAR(40) NOT NULL,
-    amount BIGINT UNSIGNED NOT NULL,
+    amount DECIMAL(65) UNSIGNED NOT NULL,
     INDEX(source),
     INDEX(target))''')
         sql.execute('''
@@ -61,6 +72,14 @@ CREATE TABLE payments(
     local_transaction BIGINT UNSIGNED NOT NULL,
     INDEX(remote_transaction),
     FOREIGN KEY(local_transaction) REFERENCES transactions(idx))''')
+        sql.execute('''
+CREATE TABLE deposit_scans(
+    idx SERIAL,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    start_block BIGINT UNSIGNED NOT NULL,
+    end_block BIGINT UNSIGNED NOT NULL,
+    transactions JSON,
+    INDEX(end_block))''')
 
 
 def get_balance(address):
@@ -75,25 +94,64 @@ def get_balance(address):
         return int(credit - debit)
 
 
+def transfer_in_session(source, target, amount, sql):
+    'Transfer rollers from source to target within a running session - no validaiton!'
+    sql.execute(
+        "INSERT INTO transactions(source, target, amount) VALUES(%(source)s, %(target)s, %(amount)s)",
+        dict(source=source, target=target, amount=int(amount)))
+    return sql.lastrowid
+
+
 def transfer(source, target, amount):
     'Transfer rollers from source to target.'
-    if amount > get_balance(source) and source != SAFE:
+    if amount > get_balance(source):
         raise InsufficientFunds(f"address {source} has less than {amount} rollers")
     with sql_connection() as sql:
-        sql.execute(
-            "INSERT INTO transactions(source, target, amount) VALUES(%(source)s, %(target)s, %(amount)s)",
-            dict(source=source, target=target, amount=amount))
-        return sql.lastrowid
+        return transfer_in_session(source, target, amount, sql)
+
+
+def deposit_in_session(address, amount, remote_transaction, sql):
+    'Fund an address from the safe within a running session - no validation!.'
+    local_transaction = transfer_in_session(SAFE, address, amount, sql)
+    sql.execute("""
+        INSERT INTO payments(remote_transaction, local_transaction)
+        VALUES(%(remote_transaction)s, %(local_transaction)s)
+    """, dict(remote_transaction=remote_transaction, local_transaction=local_transaction))
 
 
 def deposit(address, amount, remote_transaction):
     'Fund an address from the safe.'
-    local_transaction = transfer(SAFE, address, amount)
     with sql_connection() as sql:
-        sql.execute("""
-            INSERT INTO payments(remote_transaction, local_transaction)
-            VALUES(%(remote_transaction)s, %(local_transaction)s)
-        """, dict(remote_transaction=remote_transaction, local_transaction=local_transaction))
+        return deposit_in_session(address, amount, remote_transaction, sql)
+
+
+def scan_for_deposits():
+    'Scan transactions sending ether to the safe, and update deposits accordingly.'
+    with sql_connection() as sql:
+        sql.execute('SELECT COALESCE(MAX(end_block) + 1, 0) AS start_block FROM deposit_scans')
+        start_block = sql.fetchone()['start_block']
+    end_block = etherscan.get_latest_block_number() - REQUIRED_BLOCK_DEPTH
+    if end_block < start_block:
+        return
+
+    payments = etherscan.get_ether_payments(SAFE, start_block, end_block)
+    with sql_connection() as sql:
+        if payments:
+            # Check for duplicate transactions.
+            sql.execute(f"""SELECT 1 FROM payments WHERE remote_transaction IN (
+                {','.join(['%s' for i in range(len(payments))])}
+            ) LIMIT 1""", [payment['transaction'] for payment in payments])
+            if sql.fetchone():
+                LOGGER.error([payment['transaction'] for payment in payments])
+                raise ScanError('invalid payments detected', data=dict(payments=payments))
+
+            for payment in payments:
+                deposit_in_session(payment['source'], payment['amount'], payment['transaction'], sql)
+
+        payments = {}
+        sql.execute("""INSERT INTO deposit_scans(start_block, end_block, transactions) VALUES(
+            %(start_block)s, %(end_block)s, %(transactions)s
+        )""", dict(start_block=start_block, end_block=end_block, transactions=json.dumps(payments)))
 
 
 def withdraw(address, amount):
