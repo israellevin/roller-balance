@@ -2,7 +2,7 @@
 # Deploy the roller-balance server.
 
 # Parse options
-usage() { echo "Usage: $0 [s|shell] [t|test] [k|kill-listener] [r|run]"; }
+usage() { echo "Usage: $0 [s|shell] [t|test] [c|cron] [k|kill-listener] [r|run]"; }
 if ! [ "$1" ]; then
     usage
     exit 1
@@ -13,6 +13,8 @@ while [ "$1" ]; do
             shell=1;;
         t|test)
             _test=1;;
+        c|cron)
+            cron=1;;
         k|kill-listener)
             kill_listener=1;;
         r|run)
@@ -41,6 +43,16 @@ if [ "$_test" ]; then
         -vlx --log-cli-level=0 --cov . --cov-report term-missing
     type pycodestyle && pycodestyle --max-line-length=120 *.py
     type pylint && pylint --max-line-length=120 *.py
+fi
+
+if [ "$cron" ]; then
+    python <<EOF
+import data
+import logs
+logs.setup()
+logs.logging.getLogger('roller.cron')
+data.scan_for_deposits()
+EOF
 fi
 
 if [ "$kill_listener" ]; then
@@ -78,5 +90,4 @@ if [ "$run" ]; then
     echo "Currently listening on port $port:"
     lsof -i4TCP:$port -sTCP:LISTEN -t | xargs ps -fp
 fi
-
 popd
