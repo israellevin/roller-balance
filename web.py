@@ -178,18 +178,16 @@ def deposit_handler(address, amount):
     'Fake a deposit by an address.'
     if not DEBUG:
         raise Unauthorized('deposit endpoint is only available in debug mode')
-    data.deposit(address, amount, 'fake deposit')
+    data.debug_deposit(address, amount, 'debug deposit')
     return dict(status=201)
 
 
 @APP.route("/five_hundred", methods=['POST'])
 @call(['reason'])
 def five_hundred_handler(reason):
-    'Test our 500 reporting - only for testing, never available in production.'
-    if not DEBUG:
-        raise Unauthorized('five_hundred endpoint is only available in debug mode')
+    'Test our 500 reporting - only for testing, but also available in production.'
     if reason == 'response':
-        return APP
+        return None
     raise Exception('five hundred response was requested')
 
 

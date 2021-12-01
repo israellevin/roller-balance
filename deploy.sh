@@ -34,7 +34,12 @@ pushd "$(dirname "${BASH_SOURCE[0]}")"
 
 if [ "$shell" ]; then
     echo -e "\n===  OPENING A PYTHON SHELL ===\n"
-    python -ic "import logs; logs.setup(); log = logs.logging.getLogger('roller.shell'); import data; import web;"
+    python -ic "
+import data
+import etherscan
+import logs
+import web
+logs.setup()"
 fi
 
 if [ "$_test" ]; then
