@@ -19,6 +19,13 @@ CONFIG = {
     }
 }
 
+GET_PRICES = {
+    'description': 'Get the current roller prices and safe address',
+    'responses': {
+        '200': {'description': 'Current prices and safe address'}
+    }
+}
+
 GET_BALANCE = {
     'description': 'Get the roller balance of an ethereum address',
     'parameters': [

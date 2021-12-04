@@ -17,8 +17,8 @@ DB_HOST = os.environ.get('ROLLER_DB_HOST', 'localhost')
 DB_USER = os.environ.get('ROLLER_DB_USER', 'root')
 DB_PASS = os.environ.get('ROLLER_DB_PASS', 'pass')
 DB_NAME = os.environ.get('ROLLER_DB_NAME', 'roller')
-PRICE_BUY_WEI_FOR_ONE_ROLLER = 100000000000000000
-PRICE_SELL_WEI_FOR_ONE_ROLLER = 70000000000000000
+WEI_DEPOSIT_FOR_ONE_ROLLER = 100000000000000000
+WEI_WITHDRAW_FOR_ONE_ROLLER = 70000000000000000
 
 
 class InsufficientFunds(Exception):
@@ -149,9 +149,9 @@ def scan_for_deposits():
                 raise ScanError('invalid deposits detected', data=dict(deposits=deposits))
 
             for deposit in deposits:
-                if deposit['amount'] % PRICE_BUY_WEI_FOR_ONE_ROLLER != 0:
+                if deposit['amount'] % WEI_DEPOSIT_FOR_ONE_ROLLER != 0:
                     LOGGER.error(f"non integer deposit - {deposit}")  # pragma: no cover
-                roller_amount = deposit['amount'] // PRICE_BUY_WEI_FOR_ONE_ROLLER
+                roller_amount = deposit['amount'] // WEI_DEPOSIT_FOR_ONE_ROLLER
                 deposit_in_session(deposit['source'], roller_amount, deposit['transaction'], sql)
 
         sql.execute("""INSERT INTO deposit_scans(start_block, end_block, transactions) VALUES(
@@ -178,7 +178,7 @@ def get_unsettled_withdrawals():
 
 def roller_to_eth(roller_amount):
     'Convert an amount of rollers to a sell price of eth.'
-    return eth_utils.from_wei(roller_amount * PRICE_SELL_WEI_FOR_ONE_ROLLER, 'ether')
+    return eth_utils.from_wei(roller_amount * WEI_WITHDRAW_FOR_ONE_ROLLER, 'ether')
 
 
 def get_unsettled_withdrawals_aggregated_csv():
@@ -199,9 +199,9 @@ def get_payments(remote_transaction):
     'Get ether payments for withdrawals done in a multisender call.'
     payments = []
     for payment in etherscan.get_payments(SAFE, remote_transaction):
-        if payment['amount'] % PRICE_SELL_WEI_FOR_ONE_ROLLER != 0:
+        if payment['amount'] % WEI_WITHDRAW_FOR_ONE_ROLLER != 0:
             LOGGER.error(f"non integer payment - {payment}")  # pragma: no cover
-        payments.append(dict(payment, amount=payment['amount'] // PRICE_SELL_WEI_FOR_ONE_ROLLER))
+        payments.append(dict(payment, amount=payment['amount'] // WEI_WITHDRAW_FOR_ONE_ROLLER))
     return payments
 
 

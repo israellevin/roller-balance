@@ -129,6 +129,17 @@ def call(handler=None, required_arguments=None):
     return _call
 
 
+@APP.route("/get_prices", methods=['GET'])
+@flasgger.swag_from(api_spec.GET_PRICES)
+@call()
+def get_prices_handler():
+    'Get current prices and safe address.'
+    return dict(
+        status=200, safe=data.SAFE,
+        wei_deposit_for_one_roller=data.WEI_DEPOSIT_FOR_ONE_ROLLER,
+        wei_withdraw_for_one_roller=data.WEI_WITHDRAW_FOR_ONE_ROLLER)
+
+
 @APP.route("/get_balance", methods=['POST'])
 @flasgger.swag_from(api_spec.GET_BALANCE)
 @call(['address'])

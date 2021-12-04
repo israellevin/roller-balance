@@ -49,7 +49,7 @@ def test_data_etherscan():
     assert data.get_balance(data.SAFE) == 0
     data.scan_for_deposits()
     assert data.get_balance(data.SAFE) == (
-        -1 * sum([deposit['amount'] for deposit in DEPOSITS]) // data.PRICE_BUY_WEI_FOR_ONE_ROLLER)
+        -1 * sum([deposit['amount'] for deposit in DEPOSITS]) // data.WEI_DEPOSIT_FOR_ONE_ROLLER)
     data.withdraw(ADDRESSES[0], 5)
     data.withdraw(ADDRESSES[1], 5)
     assert data.get_unsettled_withdrawals() == {
@@ -66,12 +66,6 @@ def test_data_etherscan():
         sql.execute('UPDATE deposit_scans SET end_block = %s', (DEPOSIT_BLOCK_RANGE[0],))
     with pytest.raises(data.ScanError):
         data.scan_for_deposits()
-
-    # # Create a duplicate transaction.
-    # initialize_test_database()
-    # data.debug_deposit('fake', 1, ADDRESSES[0][1:])
-    # with pytest.raises(data.ScanError):
-    #     data.scan_for_deposits()
 
 
 def fake_transaction_hash():
@@ -144,8 +138,8 @@ def test_data():
     # assert data.get_unsettled_withdrawals_aggregated_csv() == ''
 
 
-def test_webserver():
-    'General webserver tests.'
+def test_webserver_errors():
+    'General webserver errors.'
     initialize_test_database()
     web.DEBUG = False
     with web.APP.test_client() as client:
@@ -211,6 +205,13 @@ def test_webserver_flow():
     initialize_test_database()
     web.DEBUG = True
     with web.APP.test_client() as client:
+        prices_repsonse = client.get('/get_prices')
+        assert prices_repsonse.status == '200 OK'
+        assert prices_repsonse.json == dict(
+            status=200, safe=data.SAFE,
+            wei_deposit_for_one_roller=data.WEI_DEPOSIT_FOR_ONE_ROLLER,
+            wei_withdraw_for_one_roller=data.WEI_WITHDRAW_FOR_ONE_ROLLER)
+
         balance_response = client.post('/get_balance', data=dict(address=ADDRESSES[0]))
         assert balance_response.status == '200 OK'
         assert balance_response.json == dict(status=200, balance=0)
