@@ -132,11 +132,6 @@ def test_data():
         5: dict(address=ADDRESSES[0], amount=4),
         6: dict(address=ADDRESSES[1], amount=2)}
 
-    # Add a true settle.
-    # assert data.settle() == dict(settled_transactions_count=3, unsettled_transaction_count=0)
-    # assert data.get_unsettled_withdrawals() == {}
-    # assert data.get_unsettled_withdrawals_aggregated_csv() == ''
-
 
 def test_webserver_errors():
     'General webserver errors.'

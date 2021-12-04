@@ -1,4 +1,5 @@
 # Roller Balance Web Service
+
 Crypto settlement service for roller game
 
 A Flask application that runs and serves a RESTful API for the roller-balance server.

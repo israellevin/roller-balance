@@ -17,8 +17,8 @@ DB_HOST = os.environ.get('ROLLER_DB_HOST', 'localhost')
 DB_USER = os.environ.get('ROLLER_DB_USER', 'root')
 DB_PASS = os.environ.get('ROLLER_DB_PASS', 'pass')
 DB_NAME = os.environ.get('ROLLER_DB_NAME', 'roller')
-WEI_DEPOSIT_FOR_ONE_ROLLER = 100000000000000000
-WEI_WITHDRAW_FOR_ONE_ROLLER = 70000000000000000
+WEI_DEPOSIT_FOR_ONE_ROLLER = 1*10**14  # 1/1000 ether, so a hundred will cost 0.01 eth.
+WEI_WITHDRAW_FOR_ONE_ROLLER = 7*10**13  # 7/10000 ether, so a hundred will withdraw 0.007 eth.
 
 
 class InsufficientFunds(Exception):
