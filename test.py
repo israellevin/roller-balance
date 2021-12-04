@@ -232,8 +232,8 @@ def test_webserver_flow():
         assert client.post('/get_balance', data=dict(address=ADDRESSES[0])).json['balance'] == 90
         assert client.post('/get_balance', data=dict(address=ADDRESSES[1])).json['balance'] == 10
 
-        assert client.post('/get_unsettled_withdrawals').status == '200 OK'
-        assert client.post('/get_unsettled_withdrawals').json['unsettled_withdrawals'] == ''
+        assert client.get('/get_unsettled_withdrawals').status == '200 OK'
+        assert client.get('/get_unsettled_withdrawals').json['unsettled_withdrawals'] == ''
         withdraw_response = client.post('/withdraw', data=dict(address=ADDRESSES[0], amount=91))
         assert withdraw_response.status == '400 BAD REQUEST'
         assert withdraw_response.json == dict(
@@ -242,15 +242,15 @@ def test_webserver_flow():
         withdraw_response = client.post('/withdraw', data=dict(address=ADDRESSES[0], amount=5))
         assert withdraw_response.status == '201 CREATED'
         assert client.post('/get_balance', data=dict(address=ADDRESSES[0])).json['balance'] == 85
-        assert client.post('/get_unsettled_withdrawals').json['unsettled_withdrawals'] != ''
+        assert client.get('/get_unsettled_withdrawals').json['unsettled_withdrawals'] != ''
         withdraw_response = client.post('/withdraw', data=dict(address=ADDRESSES[1], amount=5))
         assert withdraw_response.status == '201 CREATED'
         assert client.post('/get_balance', data=dict(address=ADDRESSES[1])).json['balance'] == 5
-        assert client.post('/get_unsettled_withdrawals').json['unsettled_withdrawals'] != ''
+        assert client.get('/get_unsettled_withdrawals').json['unsettled_withdrawals'] != ''
 
         assert client.post('/settle', data=dict(transaction_hash=PAYMENT_TRANSACTION)).status == '201 CREATED'
-        LOGGER.info(client.post('/get_unsettled_withdrawals').json['unsettled_withdrawals'])
-        assert client.post('/get_unsettled_withdrawals').json['unsettled_withdrawals'] == ''
+        LOGGER.info(client.get('/get_unsettled_withdrawals').json['unsettled_withdrawals'])
+        assert client.get('/get_unsettled_withdrawals').json['unsettled_withdrawals'] == ''
 
 
 def test_etherscan():

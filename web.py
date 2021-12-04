@@ -166,7 +166,7 @@ def withdraw_handler(address, amount):
     return dict(status=201)
 
 
-@APP.route("/get_unsettled_withdrawals", methods=['POST'])
+@APP.route("/get_unsettled_withdrawals", methods=['GET'])
 @flasgger.swag_from(api_spec.GET_UNSETTLED_WITHDRAWALS)
 @call
 def get_unsettled_withdrawals_handler():

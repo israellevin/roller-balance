@@ -80,7 +80,6 @@ WITHDRAW = {
 GET_UNSETTLED_WITHDRAWALS = {
     'description': 'Get a list of all unsettled withdrawals',
     'tags': ['admin'],
-    'parameters': [],
     'responses': {
         '200': {'description': 'A CSV list of unsettled withdrawals'}
     }
