@@ -171,7 +171,9 @@ def withdraw_handler(address, amount):
 @call
 def get_unsettled_withdrawals_handler():
     'Get a CSV list of unsettled withdrawals.'
-    return dict(status=200, unsettled_withdrawals=data.get_unsettled_withdrawals_aggregated_csv())
+    return dict(status=200, unsettled_withdrawals="\n".join([
+        f"0x{address}, {data.roller_to_eth(sum([withdrawal['amount'] for withdrawal in withdrawals]))}"
+        for address, withdrawals in data.get_unsettled_withdrawals().items()]))
 
 
 @APP.route("/settle", methods=['POST'])

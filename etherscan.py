@@ -55,7 +55,7 @@ def get_deposits(address, start_block, end_block):
 
 
 def get_payments(target_address, transaction_hash):
-    'Get a list of all payments done in a multisender call.'
+    'Get a list of all payments made in a multisender call.'
     transaction = call('proxy', 'eth_getTransactionByHash', txhash=f"0x{transaction_hash}")
     if transaction['from'].lower() != f"0x{target_address.lower()}":
         LOGGER.error(f"transaction sender is {transaction['from']} and not {target_address} as specified")

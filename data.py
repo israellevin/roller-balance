@@ -1,4 +1,5 @@
 'roller-balance data handling.'
+import collections
 import contextlib
 import json
 import logging
@@ -27,9 +28,10 @@ class InsufficientFunds(Exception):
 
 class ScanError(Exception):
     'An error when scanning for transactions.'
-    def __init__(self, message, data):
-        super().__init__(message)
-        self.data = data
+
+
+class PaymentError(Exception):
+    'An error when settling payments.'
 
 
 @contextlib.contextmanager
@@ -128,12 +130,14 @@ def debug_deposit(address, amount, remote_transaction):
         return deposit_in_session(address, amount, remote_transaction, sql)
 
 
-def scan_for_deposits():
+def scan_for_deposits(start_block=None, end_block=None):
     'Scan transactions sending ether to the safe, and update deposits accordingly.'
-    with sql_connection() as sql:
-        sql.execute('SELECT COALESCE(MAX(end_block) + 1, 0) AS start_block FROM deposit_scans')
-        start_block = sql.fetchone()['start_block']
-    end_block = etherscan.get_latest_block_number() - REQUIRED_BLOCK_DEPTH
+    if start_block is None:
+        with sql_connection() as sql:
+            sql.execute('SELECT COALESCE(MAX(end_block) + 1, 0) AS start_block FROM deposit_scans')
+            start_block = sql.fetchone()['start_block']
+    if end_block is None:
+        end_block = etherscan.get_latest_block_number() - REQUIRED_BLOCK_DEPTH
     if end_block < start_block:
         return
 
@@ -146,11 +150,11 @@ def scan_for_deposits():
             ) LIMIT 1""", [deposit['transaction'] for deposit in deposits])
             if sql.fetchone():
                 LOGGER.error(f"duplicate deposits reported: {[deposit['transaction'] for deposit in deposits]}")
-                raise ScanError('invalid deposits detected', data=dict(deposits=deposits))
+                raise ScanError('invalid deposits detected')
 
             for deposit in deposits:
                 if deposit['amount'] % WEI_DEPOSIT_FOR_ONE_ROLLER != 0:
-                    LOGGER.error(f"non integer deposit - {deposit}")  # pragma: no cover
+                    LOGGER.error(f"non integer deposit - {deposit}")
                 roller_amount = deposit['amount'] // WEI_DEPOSIT_FOR_ONE_ROLLER
                 deposit_in_session(deposit['source'], roller_amount, deposit['transaction'], sql)
 
@@ -165,15 +169,18 @@ def withdraw(address, amount):
 
 
 def get_unsettled_withdrawals():
-    'Get a list of all unsettled_withdrawals.'
+    'Get an aggregated list of all unsettled_withdrawals done at least five days before the end of the month.'
+    withdrawals = collections.defaultdict(list)
     with sql_connection() as sql:
         sql.execute("""
             SELECT idx, source AS address, amount FROM transactions
             LEFT JOIN ether_transactions ON transactions.idx = ether_transactions.local_transaction
-            WHERE target = %(safe)s AND remote_transaction IS NULL
+            WHERE target = %(safe)s AND remote_transaction IS NULL AND timestamp <= LAST_DAY(NOW()) - INTERVAL 5 DAY
             ORDER BY idx
         """, dict(safe=SAFE))
-        return {withdrawal.pop('idx'): withdrawal for withdrawal in sql.fetchall()}
+        for withdrawal in sql.fetchall():
+            withdrawals[withdrawal.pop('address')].append(withdrawal)
+    return withdrawals
 
 
 def roller_to_eth(roller_amount):
@@ -181,38 +188,28 @@ def roller_to_eth(roller_amount):
     return eth_utils.from_wei(roller_amount * WEI_WITHDRAW_FOR_ONE_ROLLER, 'ether')
 
 
-def get_unsettled_withdrawals_aggregated_csv():
-    'Get a list of all unsettled_withdrawals.'
-    with sql_connection() as sql:
-        sql.execute("""
-            SELECT source AS address, SUM(amount) AS amount FROM transactions
-            LEFT JOIN ether_transactions ON transactions.idx = ether_transactions.local_transaction
-            WHERE target = %(safe)s AND remote_transaction IS NULL
-            GROUP BY address ORDER BY MIN(idx)
-        """, dict(safe=SAFE))
-        return "\n".join([
-            f"0x{withdrawal['address']}, {roller_to_eth(withdrawal['amount'])}"
-            for withdrawal in sql.fetchall()])
-
-
-def get_payments(remote_transaction):
-    'Get ether payments for withdrawals done in a multisender call.'
-    payments = []
+def match_settlable_withdrawals(remote_transaction):
+    'Match unsettled withdrawals with ether payments made in a multisender call.'
+    candidates = get_unsettled_withdrawals()
+    matches = set()
     for payment in etherscan.get_payments(SAFE, remote_transaction):
         if payment['amount'] % WEI_WITHDRAW_FOR_ONE_ROLLER != 0:
-            LOGGER.error(f"non integer payment - {payment}")  # pragma: no cover
-        payments.append(dict(payment, amount=payment['amount'] // WEI_WITHDRAW_FOR_ONE_ROLLER))
-    return payments
+            LOGGER.error(f"non integer payment - {payment}")
+        for withdrawal in candidates[payment['address']]:
+            wei_amount = withdrawal['amount'] * WEI_WITHDRAW_FOR_ONE_ROLLER
+            if payment['amount'] < wei_amount:
+                LOGGER.error(f"unmatched withdrawal - {withdraw} not in {payment}")
+                continue
+            payment['amount'] -= wei_amount
+            matches.add(withdrawal['idx'])
+        if payment['amount'] != 0:
+            raise PaymentError(f"unmatched payment - {payment}")
+    return matches
 
 
 def settle(remote_transaction):
     'Mark withdrawals that were settled by remote_transaction as - currently just marks all withdrawals.'
-    unsettled = get_unsettled_withdrawals()
-    payments = get_payments(remote_transaction)
-    settlable = {
-        withdrawal_idx: withdrawal
-        for withdrawal_idx, withdrawal in unsettled.items()
-        if withdrawal in payments}
+    settlable = match_settlable_withdrawals(remote_transaction)
     settled_transactions_count = 0
     if settlable:
         with sql_connection() as sql:
@@ -220,7 +217,7 @@ def settle(remote_transaction):
                 INSERT INTO ether_transactions(remote_transaction, local_transaction)
                 VALUES(%(remote_transaction)s, %(local_transaction)s)""", [
                     dict(remote_transaction=remote_transaction, local_transaction=withdrawal_idx)
-                    for withdrawal_idx, withdrawal in settlable.items()])
+                    for withdrawal_idx in settlable])
     return dict(
         settled_transactions_count=settled_transactions_count,
         unsettled_transaction_count=len(get_unsettled_withdrawals()))

@@ -4,7 +4,6 @@ import uuid
 # pylint: disable=unused-import
 import pytest
 # pylint: enable=unused-import
-import _pytest.monkeypatch
 
 import data
 import etherscan
@@ -43,44 +42,14 @@ def initialize_test_database():
     data.nuke_database_and_create_new_please_think_twice()
 
 
-def test_data_etherscan():
-    'Test integration of data with etherscan module.'
-    initialize_test_database()
-    assert data.get_balance(data.SAFE) == 0
-    data.scan_for_deposits()
-    assert data.get_balance(data.SAFE) == (
-        -1 * sum([deposit['amount'] for deposit in DEPOSITS]) // data.WEI_DEPOSIT_FOR_ONE_ROLLER)
-    data.withdraw(ADDRESSES[0], 5)
-    data.withdraw(ADDRESSES[1], 5)
-    assert data.get_unsettled_withdrawals() == {
-        3: dict(address=ADDRESSES[0], amount=5), 4: dict(address=ADDRESSES[1], amount=5)}
-    assert data.settle(PAYMENT_TRANSACTION) == dict(settled_transactions_count=2, unsettled_transaction_count=0)
-    assert data.get_unsettled_withdrawals() == {}
-
-    # Make sure we hit the same block.
-    data.scan_for_deposits()
-    data.scan_for_deposits()
-
-    # Make sure we hit old data.
-    with data.sql_connection() as sql:
-        sql.execute('UPDATE deposit_scans SET end_block = %s', (DEPOSIT_BLOCK_RANGE[0],))
-    with pytest.raises(data.ScanError):
-        data.scan_for_deposits()
-
-
 def fake_transaction_hash():
     'Create a fake transaction hash.'
     return f"fake-{uuid.uuid4().hex}{uuid.uuid4().hex}"[:64]
 
 
-def test_data():
+def test_data_access():
     'Test data access.'
     initialize_test_database()
-
-    # Check error handling.
-    with pytest.raises(data.pymysql.MySQLError):
-        with data.sql_connection() as sql:
-            sql.execute('bad sql')
 
     # Test deposits.
     assert data.get_balance(ADDRESSES[0]) == 0
@@ -94,43 +63,84 @@ def test_data():
     data.transfer(ADDRESSES[0], ADDRESSES[1], 2)
     assert data.get_balance(ADDRESSES[0]) == 9
     assert data.get_balance(ADDRESSES[1]) == 2
-    with pytest.raises(data.InsufficientFunds):
-        data.transfer(ADDRESSES[0], ADDRESSES[1], 10)
 
     # Test withdraw.
-    with pytest.raises(data.InsufficientFunds):
-        data.withdraw(ADDRESSES[0], 100)
-    assert data.get_unsettled_withdrawals() == {}
+    assert not data.get_unsettled_withdrawals()
     data.withdraw(ADDRESSES[0], 3)
     assert data.get_balance(ADDRESSES[0]) == 6
-    assert data.get_unsettled_withdrawals() == {
-        4: dict(address=ADDRESSES[0], amount=3)}
-    LOGGER.info(data.get_unsettled_withdrawals_aggregated_csv())
-    assert data.get_unsettled_withdrawals_aggregated_csv() == (
-        f"0x{ADDRESSES[0]}, {data.roller_to_eth(3)}")
+    assert data.get_unsettled_withdrawals() == {ADDRESSES[0]: [dict(idx=4, amount=3)]}
     data.withdraw(ADDRESSES[0], 4)
     assert data.get_balance(ADDRESSES[0]) == 2
-    assert data.get_unsettled_withdrawals() == {
-        4: dict(address=ADDRESSES[0], amount=3),
-        5: dict(address=ADDRESSES[0], amount=4)}
-    assert data.get_unsettled_withdrawals_aggregated_csv() == (
-        f"0x{ADDRESSES[0]}, {data.roller_to_eth(7)}")
+    assert data.get_unsettled_withdrawals() == {ADDRESSES[0]: [dict(idx=4, amount=3), dict(idx=5, amount=4)]}
     data.withdraw(ADDRESSES[1], 2)
     assert data.get_balance(ADDRESSES[1]) == 0
     assert data.get_unsettled_withdrawals() == {
-        4: dict(address=ADDRESSES[0], amount=3),
-        5: dict(address=ADDRESSES[0], amount=4),
-        6: dict(address=ADDRESSES[1], amount=2)}
-    assert data.get_unsettled_withdrawals_aggregated_csv() == (
-        f"0x{ADDRESSES[0]}, {data.roller_to_eth(7)}\n"
-        f"0x{ADDRESSES[1]}, {data.roller_to_eth(2)}")
+        ADDRESSES[0]: [dict(idx=4, amount=3), dict(idx=5, amount=4)], ADDRESSES[1]: [dict(idx=6, amount=2)]}
 
-    # False settle.
-    assert data.settle(PAYMENT_TRANSACTION) == dict(settled_transactions_count=0, unsettled_transaction_count=3)
+
+def test_data_integration_with_etherscan():
+    'Test integration of data with etherscan module.'
+    initialize_test_database()
+    assert data.get_balance(data.SAFE) == 0
+    data.scan_for_deposits(*DEPOSIT_BLOCK_RANGE)
+    assert data.get_balance(data.SAFE) == (
+        -1 * sum([deposit['amount'] for deposit in DEPOSITS]) // data.WEI_DEPOSIT_FOR_ONE_ROLLER)
+    assert not data.get_unsettled_withdrawals()
+    for deposit in DEPOSITS:
+        balance = data.get_balance(deposit['source'])
+        assert balance * data.WEI_DEPOSIT_FOR_ONE_ROLLER == deposit['amount']
+        data.withdraw(deposit['source'], balance)
     assert data.get_unsettled_withdrawals() == {
-        4: dict(address=ADDRESSES[0], amount=3),
-        5: dict(address=ADDRESSES[0], amount=4),
-        6: dict(address=ADDRESSES[1], amount=2)}
+       ADDRESSES[0]: [dict(idx=3, amount=5000)], ADDRESSES[1]: [dict(idx=4, amount=5000)]}
+    assert data.settle(PAYMENT_TRANSACTION) == dict(settled_transactions_count=2, unsettled_transaction_count=0)
+    assert not data.get_unsettled_withdrawals()
+
+    # Test full scan and make sure we hit the same block twice.
+    data.scan_for_deposits()
+    data.scan_for_deposits()
+
+    # Make sure we hit old data.
+    with data.sql_connection() as sql:
+        sql.execute('UPDATE deposit_scans SET end_block = %s', (DEPOSIT_BLOCK_RANGE[0],))
+    with pytest.raises(data.ScanError):
+        data.scan_for_deposits()
+
+
+def test_data_errors(monkeypatch):
+    'Test data access.'
+    initialize_test_database()
+
+    with pytest.raises(data.pymysql.MySQLError):
+        with data.sql_connection() as sql:
+            sql.execute('bad sql')
+
+    data.debug_deposit(ADDRESSES[0], 1, fake_transaction_hash())
+    with pytest.raises(data.InsufficientFunds):
+        data.transfer(ADDRESSES[0], ADDRESSES[1], 2)
+
+    with pytest.raises(data.InsufficientFunds):
+        data.withdraw(ADDRESSES[0], 2)
+
+    bad_deposits = [deposit.copy() for deposit in DEPOSITS]
+    bad_deposits[0]['amount'] -= 1
+    monkeypatch.setattr(etherscan, 'get_deposits', lambda *args, **kwargs: bad_deposits)
+    data.scan_for_deposits(*DEPOSIT_BLOCK_RANGE)
+
+    bad_payments = [payment.copy() for payment in PAYMENTS]
+    bad_payments[0]['amount'] -= 1
+    monkeypatch.setattr(etherscan, 'get_payments', lambda *args, **kwargs: bad_payments)
+    with pytest.raises(data.PaymentError):
+        data.settle(PAYMENT_TRANSACTION)
+
+    for deposit in DEPOSITS:
+        balance = data.get_balance(deposit['source'])
+        data.withdraw(deposit['source'], balance)
+
+    bad_withdrawals = data.get_unsettled_withdrawals()
+    bad_withdrawals[ADDRESSES[0]].append(bad_withdrawals[ADDRESSES[0]][0])
+    monkeypatch.setattr(data, 'get_unsettled_withdrawals', lambda *args, **kwargs: bad_withdrawals)
+    with pytest.raises(data.PaymentError):
+        data.settle(PAYMENT_TRANSACTION)
 
 
 def test_webserver_errors():
@@ -195,8 +205,8 @@ def test_webserver_errors():
         assert client.get('/no_such_endpoint').status == '403 FORBIDDEN'
 
 
-def test_webserver_flow():
-    'To test the full flow we run a debug webserver.'
+def test_webserver_debug():
+    'Test an almost full flow in debug mode.'
     initialize_test_database()
     web.DEBUG = True
     with web.APP.test_client() as client:
@@ -243,16 +253,27 @@ def test_webserver_flow():
         assert client.post('/get_balance', data=dict(address=ADDRESSES[1])).json['balance'] == 5
         assert client.get('/get_unsettled_withdrawals').json['unsettled_withdrawals'] != ''
 
+
+def test_webserver_flow():
+    'To test the full flow we run a production webserver.'
+    initialize_test_database()
+    data.scan_for_deposits(*DEPOSIT_BLOCK_RANGE)
+    web.DEBUG = False
+    with web.APP.test_client() as client:
+        for deposit in DEPOSITS:
+            roller_balance = deposit['amount'] // data.WEI_DEPOSIT_FOR_ONE_ROLLER
+            balance_response = client.post('/get_balance', data=dict(address=deposit['source']))
+            assert balance_response.json == dict(status=200, balance=roller_balance)
+            client.post('/withdraw', data=dict(address=deposit['source'], amount=roller_balance))
+        assert client.get('/get_unsettled_withdrawals').json['unsettled_withdrawals'] != ''
         assert client.post('/settle', data=dict(transaction_hash=PAYMENT_TRANSACTION)).status == '201 CREATED'
-        LOGGER.info(client.get('/get_unsettled_withdrawals').json['unsettled_withdrawals'])
         assert client.get('/get_unsettled_withdrawals').json['unsettled_withdrawals'] == ''
 
 
-def test_etherscan():
+def test_etherscan(monkeypatch):
     'Test etherscan module.'
     assert etherscan.get_latest_block_number() > 0
     assert etherscan.get_deposits(SAFE, *DEPOSIT_BLOCK_RANGE) == DEPOSITS
-    LOGGER.info(etherscan.get_payments(PAYMENTS_ADDRESS, PAYMENT_TRANSACTION))
     assert etherscan.get_payments(PAYMENTS_ADDRESS, PAYMENT_TRANSACTION) == PAYMENTS
 
     # Test a non matching address.
@@ -269,10 +290,10 @@ def test_etherscan():
         etherscan.get_deposits(SAFE, *DEPOSIT_BLOCK_RANGE)
     etherscan.ETHERSCAN_HEADERS = original_headers
 
-    monkeypatch = _pytest.monkeypatch.MonkeyPatch()
     monkeypatch.setattr(etherscan, 'call', lambda *args, **kwargs: 'not a hex string')
     with pytest.raises(etherscan.EtherscanError):
         etherscan.get_latest_block_number()
+    monkeypatch.undo()
 
 
 def test_logs():
