@@ -7,13 +7,13 @@ import flasgger
 import flask
 import flask_cors
 
+import accounting
 import api_spec
-import data
 import logs
 
 logs.setup()
 LOGGER = logs.logging.getLogger('roller.web')
-DEBUG = data.DEBUG
+DEBUG = accounting.DEBUG
 
 
 class ArgumentMismatch(Exception):
@@ -114,7 +114,7 @@ def call(handler=None, required_arguments=None):
         try:
             request = parse_request(flask.request, required_arguments)
             response = handler(**request)
-        except (ArgumentMismatch, data.InsufficientFunds) as exception:
+        except (ArgumentMismatch, accounting.InsufficientFunds) as exception:
             response = dict(status=400, error_name=exception)
         except Unauthorized as exception:
             response = dict(status=403, error_name=exception)
@@ -135,9 +135,9 @@ def call(handler=None, required_arguments=None):
 def get_prices_handler():
     'Get current prices and safe address.'
     return dict(
-        status=200, safe=data.SAFE,
-        wei_deposit_for_one_roller=data.WEI_DEPOSIT_FOR_ONE_ROLLER,
-        wei_withdraw_for_one_roller=data.WEI_WITHDRAW_FOR_ONE_ROLLER)
+        status=200, safe=accounting.SAFE,
+        wei_deposit_for_one_roller=accounting.WEI_DEPOSIT_FOR_ONE_ROLLER,
+        wei_withdraw_for_one_roller=accounting.WEI_WITHDRAW_FOR_ONE_ROLLER)
 
 
 @APP.route("/get_balance", methods=['POST'])
@@ -145,7 +145,7 @@ def get_prices_handler():
 @call(['address'])
 def get_balance_handler(address):
     'Get the balance of an address.'
-    return dict(status=200, balance=data.get_balance(address))
+    return dict(status=200, balance=accounting.get_balance(address))
 
 
 @APP.route("/transfer", methods=['POST'])
@@ -153,7 +153,7 @@ def get_balance_handler(address):
 @call(['source', 'target', 'amount'])
 def transfer_handler(source, target, amount):
     'Transfer amount from source to target.'
-    data.transfer(source, target, amount)
+    accounting.transfer(source, target, amount)
     return dict(status=201)
 
 
@@ -162,7 +162,7 @@ def transfer_handler(source, target, amount):
 @call(['address', 'amount'])
 def withdraw_handler(address, amount):
     'Withdraw amount from system.'
-    data.withdraw(address, amount)
+    accounting.withdraw(address, amount)
     return dict(status=201)
 
 
@@ -172,8 +172,8 @@ def withdraw_handler(address, amount):
 def get_unsettled_withdrawals_handler():
     'Get a CSV list of unsettled withdrawals.'
     return dict(status=200, unsettled_withdrawals="\n".join([
-        f"0x{address}, {data.roller_to_eth(sum([withdrawal['amount'] for withdrawal in withdrawals]))}"
-        for address, withdrawals in data.get_unsettled_withdrawals().items()]))
+        f"0x{address}, {accounting.roller_to_eth(sum([withdrawal['amount'] for withdrawal in withdrawals]))}"
+        for address, withdrawals in accounting.get_unsettled_withdrawals().items()]))
 
 
 @APP.route("/settle", methods=['POST'])
@@ -181,7 +181,7 @@ def get_unsettled_withdrawals_handler():
 @call(['transaction_hash'])
 def settle_handler(transaction_hash):
     'Settle transactions that were paid by ethereum transaction_hash.'
-    return dict(status=201, **data.settle(transaction_hash))
+    return dict(status=201, **accounting.settle(transaction_hash))
 
 
 @APP.route("/deposit", methods=['POST'])
@@ -191,7 +191,7 @@ def deposit_handler(address, amount):
     'Fake a deposit by an address.'
     if not DEBUG:
         raise Unauthorized('deposit endpoint is only available in debug mode')
-    data.debug_deposit(address, amount, 'debug deposit')
+    accounting.debug_deposit(address, amount, 'debug deposit')
     return dict(status=201)
 
 

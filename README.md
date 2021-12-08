@@ -21,7 +21,8 @@ Note: during the first run of the deploy script, it will install a local virtual
 
 In the shell that opens, type the following command:
 ```python
-data.nuke_database_and_create_new_please_think_twice()
+import db
+db.nuke_database_and_create_new_please_think_twice()
 ```
 
 Notes:

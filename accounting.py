@@ -1,23 +1,18 @@
-'roller-balance data handling.'
+'roller-balance accounting.'
 import collections
-import contextlib
 import json
 import logging
 import os
 
 import eth_utils
-import pymysql
 
 import etherscan
+import db
 
-LOGGER = logging.getLogger('roller.data')
+LOGGER = logging.getLogger('roller.accounting')
 SAFE = os.environ.get('ROLLER_SAFE_ADDRESS', 40*'F')
 REQUIRED_BLOCK_DEPTH = 10
 DEBUG = os.environ.get('ROLLER_DEBUG', 'false').lower() in ['true', 'yes', 'y', '1']
-DB_HOST = os.environ.get('ROLLER_DB_HOST', 'localhost')
-DB_USER = os.environ.get('ROLLER_DB_USER', 'root')
-DB_PASS = os.environ.get('ROLLER_DB_PASS', 'pass')
-DB_NAME = os.environ.get('ROLLER_DB_NAME', 'roller')
 WEI_DEPOSIT_FOR_ONE_ROLLER = 1*10**14  # 1/1000 ether, so a hundred will cost 0.01 eth.
 WEI_WITHDRAW_FOR_ONE_ROLLER = 7*10**13  # 7/10000 ether, so a hundred will withdraw 0.007 eth.
 
@@ -34,62 +29,9 @@ class PaymentError(Exception):
     'An error when settling payments.'
 
 
-@contextlib.contextmanager
-def sql_connection(db_name=False):
-    'Context manager for querying the database.'
-    # Default to DB_NAME dynamically (not at def time).
-    if db_name is False:
-        db_name = DB_NAME
-    try:
-        connection = pymysql.connect(host=DB_HOST, user=DB_USER, password=DB_PASS, database=db_name)
-        yield connection.cursor(pymysql.cursors.DictCursor)
-        connection.commit()
-    except pymysql.MySQLError:
-        LOGGER.exception('database error')
-        if 'connection' in locals():
-            connection.rollback()
-        raise
-    finally:
-        if 'connection' in locals():
-            connection.close()
-
-
-def nuke_database_and_create_new_please_think_twice():
-    'Remove and recreate the database completely - only for debug environment.'
-    with sql_connection(db_name=None) as sql:
-        LOGGER.warning(f"dropping database {DB_NAME}")
-        sql.execute(f"DROP DATABASE IF EXISTS {DB_NAME}")
-        LOGGER.info(f"creating database {DB_NAME}")
-        sql.execute(f"CREATE DATABASE {DB_NAME}")
-    with sql_connection() as sql:
-        sql.execute('''
-CREATE TABLE transactions(
-    idx SERIAL,
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    source CHAR(40) NOT NULL,
-    target CHAR(40) NOT NULL,
-    amount DECIMAL(65) UNSIGNED NOT NULL,
-    INDEX(source),
-    INDEX(target))''')
-        sql.execute('''
-CREATE TABLE ether_transactions(
-    remote_transaction CHAR(64) NOT NULL,
-    local_transaction BIGINT UNSIGNED NOT NULL,
-    INDEX(remote_transaction),
-    FOREIGN KEY(local_transaction) REFERENCES transactions(idx))''')
-        sql.execute('''
-CREATE TABLE deposit_scans(
-    idx SERIAL,
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    start_block BIGINT UNSIGNED NOT NULL,
-    end_block BIGINT UNSIGNED NOT NULL,
-    transactions JSON,
-    INDEX(end_block))''')
-
-
 def get_balance(address):
     'Get the roller balance of an address.'
-    with sql_connection() as sql:
+    with db.sql_connection() as sql:
         sql.execute("""
             SELECT COALESCE(SUM(amount), 0) AS sum FROM transactions WHERE target = %(address)s
             UNION ALL
@@ -111,7 +53,7 @@ def transfer(source, target, amount):
     'Transfer rollers from source to target.'
     if amount > get_balance(source):
         raise InsufficientFunds(f"address {source} has less than {amount} rollers")
-    with sql_connection() as sql:
+    with db.sql_connection() as sql:
         return transfer_in_session(source, target, amount, sql)
 
 
@@ -126,14 +68,14 @@ def deposit_in_session(address, amount, remote_transaction, sql):
 
 def debug_deposit(address, amount, remote_transaction):
     'Fund an address from the safe.'
-    with sql_connection() as sql:
+    with db.sql_connection() as sql:
         return deposit_in_session(address, amount, remote_transaction, sql)
 
 
 def scan_for_deposits(start_block=None, end_block=None):
     'Scan transactions sending ether to the safe, and update deposits accordingly.'
     if start_block is None:
-        with sql_connection() as sql:
+        with db.sql_connection() as sql:
             sql.execute('SELECT COALESCE(MAX(end_block) + 1, 0) AS start_block FROM deposit_scans')
             start_block = sql.fetchone()['start_block']
     if end_block is None:
@@ -142,7 +84,7 @@ def scan_for_deposits(start_block=None, end_block=None):
         return
 
     deposits = etherscan.get_deposits(SAFE, start_block, end_block)
-    with sql_connection() as sql:
+    with db.sql_connection() as sql:
         if deposits:
             # Check for duplicate transactions.
             sql.execute(f"""SELECT 1 FROM ether_transactions WHERE remote_transaction IN (
@@ -171,7 +113,7 @@ def withdraw(address, amount):
 def get_unsettled_withdrawals():
     'Get an aggregated list of all unsettled_withdrawals done at least five days before the end of the month.'
     withdrawals = collections.defaultdict(list)
-    with sql_connection() as sql:
+    with db.sql_connection() as sql:
         sql.execute("""
             SELECT idx, source AS address, amount FROM transactions
             LEFT JOIN ether_transactions ON transactions.idx = ether_transactions.local_transaction
@@ -212,7 +154,7 @@ def settle(remote_transaction):
     settlable = match_settlable_withdrawals(remote_transaction)
     settled_transactions_count = 0
     if settlable:
-        with sql_connection() as sql:
+        with db.sql_connection() as sql:
             settled_transactions_count = sql.executemany("""
                 INSERT INTO ether_transactions(remote_transaction, local_transaction)
                 VALUES(%(remote_transaction)s, %(local_transaction)s)""", [

@@ -35,7 +35,7 @@ pushd "$(dirname "${BASH_SOURCE[0]}")"
 if [ "$shell" ]; then
     echo -e "\n===  OPENING A PYTHON SHELL ===\n"
     python -ic "
-import data
+import accounting
 import etherscan
 import logs
 import web
@@ -52,11 +52,11 @@ fi
 
 if [ "$cron" ]; then
     python <<EOF
-import data
+import accounting
 import logs
 logs.setup()
 logs.logging.getLogger('roller.cron')
-data.scan_for_deposits()
+accounting.scan_for_deposits()
 EOF
 fi
 
