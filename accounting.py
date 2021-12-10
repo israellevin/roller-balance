@@ -10,11 +10,23 @@ import etherscan
 import db
 
 LOGGER = logging.getLogger('roller.accounting')
-SAFE = os.environ.get('ROLLER_SAFE_ADDRESS', 40*'F')
-REQUIRED_BLOCK_DEPTH = 10
-DEBUG = os.environ.get('ROLLER_DEBUG', 'false').lower() in ['true', 'yes', 'y', '1']
 WEI_DEPOSIT_FOR_ONE_ROLLER = 1*10**14  # 1/1000 ether, so a hundred will cost 0.01 eth.
 WEI_WITHDRAW_FOR_ONE_ROLLER = 7*10**13  # 7/10000 ether, so a hundred will withdraw 0.007 eth.
+REQUIRED_BLOCK_DEPTH = 10  # This is the required depth for accepting deposits and settling withdrawals.
+BOT_INITIAL_FUND = 1000
+BOT_TRANSFER_MAX = 50
+BOT_USAGE_MIN = 'INTERVAL 10 SECOND'
+BOT_USAGE_MAX = 'INTERVAL 10 MINUTE'
+BOTS = {
+    'dD2FD4581271e230360230F9337D5c0430Bf44C0': BOT_INITIAL_FUND,
+    '9873b417A5276ac533B51238C8E314BCCced2a1F': BOT_INITIAL_FUND,
+    '53993b1a1c6FB4714e9D02FaF9c72a0118e2F9FE': BOT_INITIAL_FUND}
+SAFE = os.environ.get('ROLLER_SAFE_ADDRESS')
+DEBUG = os.environ.get('ROLLER_DEBUG', 'false').lower() in ['true', 'yes', 'y', '1']
+
+
+class BotNotFound(Exception):
+    'No bot found to play with.'
 
 
 class InsufficientFunds(Exception):
@@ -25,7 +37,7 @@ class ScanError(Exception):
     'An error when scanning for transactions.'
 
 
-class PaymentError(Exception):
+class SettleError(Exception):
     'An error when settling payments.'
 
 
@@ -41,6 +53,74 @@ def get_balance(address):
         return int(credit - debit)
 
 
+def update_bots():
+    'Update the balances of the BOTS global - a bot that exhausted its balance is removed from the list.'
+    # Using a global here because I think a singleton class in an overkill.
+    # pylint: disable=global-variable-not-assigned
+    global BOTS
+    if not BOTS:
+        raise BotNotFound
+    for bot, old_balance in BOTS.items():
+        new_balance = get_balance(bot)
+        if new_balance != old_balance:
+            if new_balance == 0:
+                # Trust me, it's necessary.
+                # pylint: disable=unnecessary-dict-index-lookup
+                del BOTS[bot]
+                # pylint: enable=unnecessary-dict-index-lookup
+            else:
+                BOTS[bot] = new_balance
+
+
+def get_bot(player_address):
+    'Get a bot to play with.'
+    update_bots()
+    with db.sql_connection() as sql:
+        if sql.execute(f"""INSERT INTO bots(bot_address, player_address, busy)
+            SELECT free.bot_address, %(player_address)s AS player_address, 1 AS busy FROM (
+                SELECT bot_address, MAX(timestamp) AS timestamp FROM bots
+                WHERE busy = 0
+                GROUP BY bot_address
+            ) AS free LEFT OUTER JOIN (
+                SELECT bot_address, MAX(timestamp) AS timestamp FROM bots
+                WHERE timestamp > (NOW() - {BOT_USAGE_MAX}) AND busy = 1
+                GROUP BY bot_address
+            ) AS busy
+                ON free.bot_address = busy.bot_address AND busy.timestamp > free.timestamp
+            WHERE busy.timestamp IS NULL
+            AND free.bot_address IN ({', '.join([f"%(bot_{bot})s" for bot in BOTS])})
+            ORDER BY busy.timestamp LIMIT 1
+        """, dict({f"bot_{bot}": bot for bot in BOTS}, player_address=player_address)) != 1:
+            return None
+        sql.execute("SELECT bot_address FROM bots WHERE idx = %(row_id)s", dict(row_id=sql.lastrowid))
+        address = sql.fetchone()['bot_address']
+        return dict(address=address, balance=BOTS[address])
+
+
+def free_bot(source, target, amount, sql):
+    'Check if one of the transfer addresses belongs to a recognized bot, and if so if it was requested by the other.'
+    if source in BOTS:
+        if amount > BOT_TRANSFER_MAX:
+            raise InsufficientFunds(f"bot transfer of {amount} from {source} to {target} too big")
+        bot_address = source
+        player_address = target
+    elif target not in BOTS:
+        return
+    else:
+        bot_address = target
+        player_address = source
+    sql.execute(f"""
+        SELECT 1 FROM bots
+        WHERE timestamp BETWEEN (NOW() - {BOT_USAGE_MIN}) AND (NOW() - {BOT_USAGE_MAX})
+        AND bot_address = %(bot_address)s AND player_address = %(player_address)s
+    """, dict(bot_address=bot_address, player_address=player_address))
+    if sql.fetchone() is None:
+        raise InsufficientFunds(f"bot {bot_address} not avaiable for {player_address}")
+    sql.execute(
+        "INSERT INTO BOTS(bot_address, player_address, busy) VALUES(%(bot_address)s, %(player_address)s, 0)",
+        dict(bot_address=bot_address, player_address=player_address))
+
+
 def transfer_in_session(source, target, amount, sql):
     'Transfer rollers from source to target within a running session - no validaiton!'
     sql.execute(
@@ -54,6 +134,7 @@ def transfer(source, target, amount):
     if amount > get_balance(source):
         raise InsufficientFunds(f"address {source} has less than {amount} rollers")
     with db.sql_connection() as sql:
+        free_bot(source, target, amount, sql)
         return transfer_in_session(source, target, amount, sql)
 
 
@@ -88,7 +169,7 @@ def scan_for_deposits(start_block=None, end_block=None):
         if deposits:
             # Check for duplicate transactions.
             sql.execute(f"""SELECT 1 FROM ether_transactions WHERE remote_transaction IN (
-                {','.join(['%s' for i in range(len(deposits))])}
+                {', '.join(['%s' for i in range(len(deposits))])}
             ) LIMIT 1""", [deposit['transaction'] for deposit in deposits])
             if sql.fetchone():
                 LOGGER.error(f"duplicate deposits reported: {[deposit['transaction'] for deposit in deposits]}")
@@ -145,7 +226,7 @@ def match_settlable_withdrawals(remote_transaction):
             payment['amount'] -= wei_amount
             matches.add(withdrawal['idx'])
         if payment['amount'] != 0:
-            raise PaymentError(f"unmatched payment - {payment}")
+            raise SettleError(f"unmatched payment - {payment}")
     return matches
 
 

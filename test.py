@@ -1,4 +1,6 @@
 'Tests for roller-balance server.'
+import collections
+import decimal
 import os.path
 import uuid
 
@@ -44,12 +46,19 @@ def initialize_test_database():
     db.nuke_database_and_create_new_please_think_twice()
 
 
+def get_last_transaction_idx():
+    'Get the latest transaction idx.'
+    with db.sql_connection() as sql:
+        sql.execute('SELECT idx FROM transactions ORDER BY idx DESC LIMIT 1')
+    return sql.fetchone()['idx']
+
+
 def fake_transaction_hash():
     'Create a fake transaction hash.'
     return f"fake-{uuid.uuid4().hex}{uuid.uuid4().hex}"[:64]
 
 
-def test_accounting():
+def test_accounting_basic():
     'Test accounting.'
     initialize_test_database()
 
@@ -67,33 +76,48 @@ def test_accounting():
     assert accounting.get_balance(ADDRESSES[1]) == 2
 
     # Test withdraw.
-    assert not accounting.get_unsettled_withdrawals()
+    withdrawals = collections.defaultdict(list)
+    transaction_idx = get_last_transaction_idx()
+    assert accounting.get_unsettled_withdrawals() == withdrawals
+
     accounting.withdraw(ADDRESSES[0], 3)
     assert accounting.get_balance(ADDRESSES[0]) == 6
-    assert accounting.get_unsettled_withdrawals() == {ADDRESSES[0]: [dict(idx=4, amount=3)]}
+    transaction_idx += 1
+    withdrawals[ADDRESSES[0]].append(dict(idx=transaction_idx, amount=decimal.Decimal(3)))
+    assert accounting.get_unsettled_withdrawals() == withdrawals
+
     accounting.withdraw(ADDRESSES[0], 4)
     assert accounting.get_balance(ADDRESSES[0]) == 2
-    assert accounting.get_unsettled_withdrawals() == {ADDRESSES[0]: [dict(idx=4, amount=3), dict(idx=5, amount=4)]}
+    transaction_idx += 1
+    withdrawals[ADDRESSES[0]].append(dict(idx=transaction_idx, amount=decimal.Decimal(4)))
+    assert accounting.get_unsettled_withdrawals() == withdrawals
+
     accounting.withdraw(ADDRESSES[1], 2)
     assert accounting.get_balance(ADDRESSES[1]) == 0
-    assert accounting.get_unsettled_withdrawals() == {
-        ADDRESSES[0]: [dict(idx=4, amount=3), dict(idx=5, amount=4)], ADDRESSES[1]: [dict(idx=6, amount=2)]}
+    transaction_idx += 1
+    withdrawals[ADDRESSES[1]].append(dict(idx=transaction_idx, amount=decimal.Decimal(2)))
+    assert accounting.get_unsettled_withdrawals() == withdrawals
 
 
-def test_accounting_integration_with_etherscan():
+def test_accounting_with_etherscan():
     'Test integration of accounting with etherscan module.'
     initialize_test_database()
-    assert accounting.get_balance(accounting.SAFE) == 0
+    bot_fund = len(accounting.BOTS) * accounting.BOT_INITIAL_FUND
+    assert accounting.get_balance(accounting.SAFE) == -bot_fund
     accounting.scan_for_deposits(*DEPOSIT_BLOCK_RANGE)
     assert accounting.get_balance(accounting.SAFE) == (
-        -1 * sum([deposit['amount'] for deposit in DEPOSITS]) // accounting.WEI_DEPOSIT_FOR_ONE_ROLLER)
+        -1 * sum([deposit['amount'] for deposit in DEPOSITS]) // accounting.WEI_DEPOSIT_FOR_ONE_ROLLER) - bot_fund
     assert not accounting.get_unsettled_withdrawals()
+
+    withdrawals = collections.defaultdict(list)
+    transaction_idx = get_last_transaction_idx()
     for deposit in DEPOSITS:
         balance = accounting.get_balance(deposit['source'])
         assert balance * accounting.WEI_DEPOSIT_FOR_ONE_ROLLER == deposit['amount']
         accounting.withdraw(deposit['source'], balance)
-    assert accounting.get_unsettled_withdrawals() == {
-       ADDRESSES[0]: [dict(idx=3, amount=5000)], ADDRESSES[1]: [dict(idx=4, amount=5000)]}
+        transaction_idx += 1
+        withdrawals[deposit['source']].append(dict(idx=transaction_idx, amount=decimal.Decimal(balance)))
+    assert accounting.get_unsettled_withdrawals() == withdrawals
     assert accounting.settle(PAYMENT_TRANSACTION) == dict(settled_transactions_count=2, unsettled_transaction_count=0)
     assert not accounting.get_unsettled_withdrawals()
 
@@ -127,7 +151,7 @@ def test_accounting_errors(monkeypatch):
     bad_payments = [payment.copy() for payment in PAYMENTS]
     bad_payments[0]['amount'] -= 1
     monkeypatch.setattr(etherscan, 'get_payments', lambda *args, **kwargs: bad_payments)
-    with pytest.raises(accounting.PaymentError):
+    with pytest.raises(accounting.SettleError):
         accounting.settle(PAYMENT_TRANSACTION)
 
     for deposit in DEPOSITS:
@@ -137,7 +161,7 @@ def test_accounting_errors(monkeypatch):
     bad_withdrawals = accounting.get_unsettled_withdrawals()
     bad_withdrawals[ADDRESSES[0]].append(bad_withdrawals[ADDRESSES[0]][0])
     monkeypatch.setattr(accounting, 'get_unsettled_withdrawals', lambda *args, **kwargs: bad_withdrawals)
-    with pytest.raises(accounting.PaymentError):
+    with pytest.raises(accounting.SettleError):
         accounting.settle(PAYMENT_TRANSACTION)
 
 
@@ -215,6 +239,11 @@ def test_webserver_debug():
             wei_deposit_for_one_roller=accounting.WEI_DEPOSIT_FOR_ONE_ROLLER,
             wei_withdraw_for_one_roller=accounting.WEI_WITHDRAW_FOR_ONE_ROLLER)
 
+        bot_response = client.post('/get_bot', data=dict(player_address=ADDRESSES[0]))
+        assert bot_response.status == '200 OK'
+        assert bot_response.json == dict(status=200, bot=dict(
+            address='dD2FD4581271e230360230F9337D5c0430Bf44C0', balance=accounting.BOT_INITIAL_FUND))
+
         balance_response = client.post('/get_balance', data=dict(address=ADDRESSES[0]))
         assert balance_response.status == '200 OK'
         assert balance_response.json == dict(status=200, balance=0)
@@ -252,7 +281,7 @@ def test_webserver_debug():
         assert client.get('/get_unsettled_withdrawals').json['unsettled_withdrawals'] != ''
 
 
-def test_webserver_flow():
+def test_webserver_payment_flow():
     'To test the full flow we run a production webserver.'
     initialize_test_database()
     accounting.scan_for_deposits(*DEPOSIT_BLOCK_RANGE)
@@ -303,25 +332,35 @@ def test_database(monkeypatch, tmp_path):
         with db.sql_connection() as sql:
             sql.execute('bad sql')
 
-    bad_sql_file_name = '0.bad.sql'
-    with open(os.path.join(tmp_path, bad_sql_file_name), 'w', encoding='utf-8') as bad_sql_file:
-        bad_sql_file.write('bad sql;')
+    # Try bad migrations.
     monkeypatch.setattr(db, 'MIGRATIONS_DIRECTORY', tmp_path)
-    monkeypatch.setattr(db.os, 'listdir', lambda *args, **kwargs: [bad_sql_file_name])
+    for migration, migration_file_name in (
+        ('Bad SQL;', '0.bad.sql'),
+        ('# No apply function.', '0.bad.py'),
+        ('Bad python', '0.bad.py')
+    ):
+        with open(os.path.join(tmp_path, migration_file_name), 'w', encoding='utf-8') as migration_file:
+            migration_file.write(migration)
+        monkeypatch.setattr(db.os, 'listdir', lambda *args, **kwargs: [migration_file_name])
+        with pytest.raises(db.FailedMigration):
+            initialize_test_database()
+    monkeypatch.undo()
+
+    monkeypatch.setattr(db, 'MIGRATIONS_DIRECTORY', tmp_path)
+    migration_file_name = '0.bad.py'
+    migration = 'error = 1  # No apply function.'
+    with open(os.path.join(tmp_path, migration_file_name), 'w', encoding='utf-8') as migration_file:
+        migration_file.write(migration)
+    monkeypatch.setattr(db.os, 'listdir', lambda *args, **kwargs: [migration_file_name])
     with pytest.raises(db.FailedMigration):
         initialize_test_database()
     monkeypatch.undo()
     monkeypatch.undo()
 
-    # Non existing migration file name.
-    monkeypatch.setattr(db.os, 'listdir', lambda *args, **kwargs: ['no such file'])
-    initialize_test_database()
-    monkeypatch.undo()
-
     # Invalid migration file names.
     monkeypatch.setattr(db.os.path, 'isfile', lambda *args, **kwargs: True)
     monkeypatch.setattr(db.os, 'listdir', lambda *args, **kwargs: [
-        '0.schema.py', 'schema.sql', '/tmp', '0.schema.sql', '0.duplicate.sql'])
+        '0.schema.sqnot', 'schema.sql', '/tmp', '0.schema.sql', '0.duplicate.sql'])
     with pytest.raises(db.DuplicateMigrationNumber):
         initialize_test_database()
     monkeypatch.undo()

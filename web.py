@@ -148,6 +148,14 @@ def get_balance_handler(address):
     return dict(status=200, balance=accounting.get_balance(address))
 
 
+@APP.route("/get_bot", methods=['POST'])
+@flasgger.swag_from(api_spec.GET_BOT)
+@call(['player_address'])
+def get_bot_handler(player_address):
+    'Get an available bot for a player.'
+    return dict(status=200, bot=accounting.get_bot(player_address))
+
+
 @APP.route("/transfer", methods=['POST'])
 @flasgger.swag_from(api_spec.TRANSFER)
 @call(['source', 'target', 'amount'])

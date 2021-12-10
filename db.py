@@ -1,5 +1,6 @@
 'roller-balance database access.'
 import contextlib
+import importlib
 import logging
 import os
 import re
@@ -51,8 +52,8 @@ def collect_migrations():
         if not os.path.isfile(file_path):
             LOGGER.warning(f"skipping unsupported migration file type {file_name} (is not a file)")
             continue
-        if not os.path.splitext(file_name)[-1] == '.sql':
-            LOGGER.warning(f"skipping unsupported migration file type {file_name} (is not sql)")
+        if not os.path.splitext(file_name)[-1].lower() in ['.sql', '.py']:
+            LOGGER.warning(f"skipping unsupported migration file type {file_name} (is not sql or py)")
             continue
         try:
             migration_number = int(re.match('[0-9]+', file_name).group(0), 10)
@@ -74,6 +75,18 @@ def nuke_database_and_create_new_please_think_twice():
         LOGGER.info(f"creating database {DB_NAME}")
         sql.execute(f"CREATE DATABASE {DB_NAME}")
     for migration in collect_migrations():
-        with open(migration, 'r', encoding='utf-8') as sql_file:
-            if subprocess.call(['mysql', '-h', DB_HOST, '-u', DB_USER, f"-p{DB_PASS}", DB_NAME], stdin=sql_file) != 0:
-                raise FailedMigration(f"migration in {migration} failed")
+        if migration.lower().endswith('.sql'):
+            with open(migration, 'r', encoding='utf-8') as sql_file:
+                if subprocess.call(
+                    ['mysql', '-h', DB_HOST, '-u', DB_USER, f"-p{DB_PASS}", DB_NAME], stdin=sql_file
+                ) != 0:
+                    raise FailedMigration(f"migration file in {migration} failed")
+        elif migration.lower().endswith('.py'):
+            try:
+                spec = importlib.util.spec_from_file_location('migration', migration)
+                migration_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(migration_module)
+                migration_module.apply()
+            except Exception:
+                raise FailedMigration(
+                    f"migration file in {migration} does not implement the apply method") from None

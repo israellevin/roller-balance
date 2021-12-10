@@ -1,3 +1,4 @@
+-- Creating the base schema.
 CREATE TABLE transactions(
     idx SERIAL,
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -20,3 +21,13 @@ CREATE TABLE deposit_scans(
     end_block BIGINT UNSIGNED NOT NULL,
     transactions JSON,
     INDEX(end_block));
+
+CREATE TABLE bots(
+    idx SERIAL,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    bot_address CHAR(40) NOT NULL,
+    player_address CHAR(40) NOT NULL,
+    busy BOOLEAN NOT NULL,
+    INDEX(timestamp),
+    INDEX(bot_address, player_address),
+    INDEX(busy));
