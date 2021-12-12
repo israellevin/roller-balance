@@ -132,6 +132,58 @@ def test_accounting_with_etherscan():
         accounting.scan_for_deposits()
 
 
+def test_accounting_bots(monkeypatch):
+    'Test accounting bots.'
+    initialize_test_database()
+
+    # Save bots for later.
+    monkeypatch.setattr(accounting, 'BOTS', dict(accounting.BOTS))
+
+    # Get all bots.
+    bots = []
+    for idx in range(len(accounting.BOTS)):
+        bots.append(dict(accounting.get_bot(ADDRESSES[idx]), player_address=ADDRESSES[idx]))
+        assert bots[-1]['balance'] == accounting.BOTS[bots[-1]['address']]
+
+    # No bots remaining.
+    with pytest.raises(accounting.BotNotFound):
+        accounting.get_bot(ADDRESSES[len(accounting.BOTS)])
+
+    # Try to transfer too soon from a bot.
+    with pytest.raises(accounting.BotNotFound):
+        accounting.transfer(list(accounting.BOTS)[0], ADDRESSES[0], 1)
+    monkeypatch.setattr(accounting, 'BOT_USAGE_MIN', 'INTERVAL -1 SECOND')
+
+    # Try to transfer too much from a bot.
+    with pytest.raises(accounting.InsufficientFunds):
+        accounting.transfer(list(accounting.BOTS)[0], ADDRESSES[0], accounting.BOT_INITIAL_FUND)
+    monkeypatch.setattr(accounting, 'BOT_TRANSFER_MAX', accounting.BOT_INITIAL_FUND)
+
+    # Try to transfer with wrong player address.
+    with pytest.raises(accounting.BotNotFound):
+        accounting.transfer(list(accounting.BOTS)[0], ADDRESSES[1], 1)
+
+    # Free a bot, try to grab it by a player that already has a bot, then transfer to and fro.
+    accounting.transfer(bots[0]['address'], bots[0]['player_address'], 1)
+    with pytest.raises(accounting.BotNotFound):
+        accounting.get_bot(bots[1]['player_address'])
+    accounting.get_bot(bots[0]['player_address'])
+    accounting.transfer(bots[0]['player_address'], bots[0]['address'], 1)
+    accounting.get_bot(bots[0]['player_address'])
+
+    # Free a bot, make sure it is free by requesting it, then free it and deplete it to make sure it is removed.
+    for bot in bots:
+        accounting.transfer(bot['address'], bot['player_address'], accounting.BOT_INITIAL_FUND - 1)
+        assert accounting.get_bot(bot['player_address'])['address'] == bot['address']
+        accounting.transfer(bot['address'], bot['player_address'], 1)
+        with pytest.raises(accounting.BotNotFound):
+            accounting.get_bot(ADDRESSES[idx])
+
+    # Find that there are no bots avaiable.
+    with pytest.raises(accounting.BotNotFound):
+        accounting.update_bots()
+
+
 def test_accounting_errors(monkeypatch):
     'Test accounting errors.'
     initialize_test_database()
@@ -242,7 +294,7 @@ def test_webserver_debug():
         bot_response = client.post('/get_bot', data=dict(player_address=ADDRESSES[0]))
         assert bot_response.status == '200 OK'
         assert bot_response.json == dict(status=200, bot=dict(
-            address='dD2FD4581271e230360230F9337D5c0430Bf44C0', balance=accounting.BOT_INITIAL_FUND))
+            address=sorted(accounting.BOTS)[0], balance=accounting.BOT_INITIAL_FUND))
 
         balance_response = client.post('/get_balance', data=dict(address=ADDRESSES[0]))
         assert balance_response.status == '200 OK'
@@ -341,21 +393,13 @@ def test_database(monkeypatch, tmp_path):
     ):
         with open(os.path.join(tmp_path, migration_file_name), 'w', encoding='utf-8') as migration_file:
             migration_file.write(migration)
+        # It's okay, really.
+        # pylint: disable=cell-var-from-loop
         monkeypatch.setattr(db.os, 'listdir', lambda *args, **kwargs: [migration_file_name])
+        # pylint: enable=cell-var-from-loop
         with pytest.raises(db.FailedMigration):
             initialize_test_database()
-    monkeypatch.undo()
-
-    monkeypatch.setattr(db, 'MIGRATIONS_DIRECTORY', tmp_path)
-    migration_file_name = '0.bad.py'
-    migration = 'error = 1  # No apply function.'
-    with open(os.path.join(tmp_path, migration_file_name), 'w', encoding='utf-8') as migration_file:
-        migration_file.write(migration)
-    monkeypatch.setattr(db.os, 'listdir', lambda *args, **kwargs: [migration_file_name])
-    with pytest.raises(db.FailedMigration):
-        initialize_test_database()
-    monkeypatch.undo()
-    monkeypatch.undo()
+    # monkeypatch.undo()
 
     # Invalid migration file names.
     monkeypatch.setattr(db.os.path, 'isfile', lambda *args, **kwargs: True)
@@ -363,7 +407,6 @@ def test_database(monkeypatch, tmp_path):
         '0.schema.sqnot', 'schema.sql', '/tmp', '0.schema.sql', '0.duplicate.sql'])
     with pytest.raises(db.DuplicateMigrationNumber):
         initialize_test_database()
-    monkeypatch.undo()
     monkeypatch.undo()
 
 

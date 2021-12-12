@@ -89,4 +89,4 @@ def nuke_database_and_create_new_please_think_twice():
                 migration_module.apply()
             except Exception:
                 raise FailedMigration(
-                    f"migration file in {migration} does not implement the apply method") from None
+                    f"failed running apply method in migration file in {migration}") from None
