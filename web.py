@@ -114,10 +114,12 @@ def call(handler=None, required_arguments=None):
         try:
             request = parse_request(flask.request, required_arguments)
             response = handler(**request)
-        except (ArgumentMismatch, accounting.InsufficientFunds) as exception:
+        except (ArgumentMismatch, accounting.InsufficientFunds, accounting.SettleError) as exception:
             response = dict(status=400, error_name=exception)
         except Unauthorized as exception:
             response = dict(status=403, error_name=exception)
+        except accounting.BotNotFound as exception:
+            response = dict(status=503, error_name=exception)
         except Exception as exception:
             LOGGER.exception(f"unexpected server exception on {flask.request.url}: {request}")
             response = dict(status=500, error_name=exception, stacktrace=traceback.format_exc().split('\n'))
