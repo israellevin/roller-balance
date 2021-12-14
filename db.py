@@ -73,7 +73,7 @@ def nuke_database_and_create_new_please_think_twice():
         LOGGER.warning(f"dropping database {DB_NAME}")
         sql.execute(f"DROP DATABASE IF EXISTS {DB_NAME}")
         LOGGER.info(f"creating database {DB_NAME}")
-        sql.execute(f"CREATE DATABASE {DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci")
+        sql.execute(f"CREATE DATABASE {DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
     for migration in collect_migrations():
         if migration.lower().endswith('.sql'):
             with open(migration, 'r', encoding='utf-8') as sql_file:
