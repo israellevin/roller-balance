@@ -231,6 +231,14 @@ def test_webserver_errors():
             status=400, error_name='ArgumentMismatch',
             error_message='request does not contain arguments(s): address')
 
+        bot_address = client.post('/get_bot', data=dict(player_address=ADDRESSES[0])).json['bot']['address']
+        error_response = client.post('/get_bot', data=dict(player_address=ADDRESSES[0]))
+        LOGGER.warning(error_response.json)
+        assert error_response.status == '503 SERVICE UNAVAILABLE'
+        assert error_response.json == dict(
+            status=503, error_name='BotNotFound',
+            error_message=f"bot not avaiable for {ADDRESSES[0]} because he is using bot {bot_address}")
+
         error_response = client.post('/get_balance', data=dict(bad_argument='stam', address=ADDRESSES[0]))
         assert error_response.status == '400 BAD REQUEST'
         assert error_response.json == dict(
