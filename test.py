@@ -102,11 +102,10 @@ def test_accounting_basic():
 def test_accounting_with_etherscan():
     'Test integration of accounting with etherscan module.'
     initialize_test_database()
-    bot_fund = len(accounting.BOTS) * accounting.BOT_INITIAL_FUND
-    assert accounting.get_balance(accounting.SAFE) == -bot_fund
+    assert accounting.get_balance(accounting.SAFE) == 0
     accounting.scan_for_deposits(*DEPOSIT_BLOCK_RANGE)
     assert accounting.get_balance(accounting.SAFE) == (
-        -1 * sum([deposit['amount'] for deposit in DEPOSITS]) // accounting.WEI_DEPOSIT_FOR_ONE_ROLLER) - bot_fund
+        -1 * sum([deposit['amount'] for deposit in DEPOSITS]) // accounting.WEI_DEPOSIT_FOR_ONE_ROLLER)
     assert not accounting.get_unsettled_withdrawals()
 
     withdrawals = collections.defaultdict(list)
@@ -130,58 +129,6 @@ def test_accounting_with_etherscan():
         sql.execute('UPDATE deposit_scans SET end_block = %s', (DEPOSIT_BLOCK_RANGE[0],))
     with pytest.raises(accounting.ScanError):
         accounting.scan_for_deposits()
-
-
-def test_accounting_bots(monkeypatch):
-    'Test accounting bots.'
-    initialize_test_database()
-
-    # Save bots for later.
-    monkeypatch.setattr(accounting, 'BOTS', dict(accounting.BOTS))
-
-    # Get all bots.
-    bots = []
-    for idx in range(len(accounting.BOTS)):
-        bots.append(dict(accounting.get_bot(ADDRESSES[idx]), player_address=ADDRESSES[idx]))
-        assert bots[-1]['balance'] == accounting.BOTS[bots[-1]['address']]
-
-    # No bots remaining.
-    with pytest.raises(accounting.BotNotFound):
-        accounting.get_bot(ADDRESSES[len(accounting.BOTS)])
-
-    # Try to transfer too soon from a bot.
-    with pytest.raises(accounting.BotNotFound):
-        accounting.transfer(list(accounting.BOTS)[0], ADDRESSES[0], 1)
-    monkeypatch.setattr(accounting, 'BOT_USAGE_MIN', 'INTERVAL -1 SECOND')
-
-    # Try to transfer too much from a bot.
-    with pytest.raises(accounting.InsufficientFunds):
-        accounting.transfer(list(accounting.BOTS)[0], ADDRESSES[0], accounting.BOT_INITIAL_FUND)
-    monkeypatch.setattr(accounting, 'BOT_TRANSFER_MAX', accounting.BOT_INITIAL_FUND)
-
-    # Try to transfer with wrong player address.
-    with pytest.raises(accounting.BotNotFound):
-        accounting.transfer(list(accounting.BOTS)[0], ADDRESSES[1], 1)
-
-    # Free a bot, try to grab it by a player that already has a bot, then transfer to and fro.
-    accounting.transfer(bots[0]['address'], bots[0]['player_address'], 1)
-    with pytest.raises(accounting.BotNotFound):
-        accounting.get_bot(bots[1]['player_address'])
-    accounting.get_bot(bots[0]['player_address'])
-    accounting.transfer(bots[0]['player_address'], bots[0]['address'], 1)
-    accounting.get_bot(bots[0]['player_address'])
-
-    # Free a bot, make sure it is free by requesting it, then free it and deplete it to make sure it is removed.
-    for bot in bots:
-        accounting.transfer(bot['address'], bot['player_address'], accounting.BOT_INITIAL_FUND - 1)
-        assert accounting.get_bot(bot['player_address'])['address'] == bot['address']
-        accounting.transfer(bot['address'], bot['player_address'], 1)
-        with pytest.raises(accounting.BotNotFound):
-            accounting.get_bot(ADDRESSES[idx])
-
-    # Find that there are no bots avaiable.
-    with pytest.raises(accounting.BotNotFound):
-        accounting.update_bots()
 
 
 def test_accounting_errors(monkeypatch):
@@ -231,14 +178,6 @@ def test_webserver_errors():
             status=400, error_name='ArgumentMismatch',
             error_message='request does not contain arguments(s): address')
 
-        bot_address = client.post('/get_bot', data=dict(player_address=ADDRESSES[0])).json['bot']['address']
-        error_response = client.post('/get_bot', data=dict(player_address=ADDRESSES[0]))
-        LOGGER.warning(error_response.json)
-        assert error_response.status == '503 SERVICE UNAVAILABLE'
-        assert error_response.json == dict(
-            status=503, error_name='BotNotFound',
-            error_message=f"bot not avaiable for {ADDRESSES[0]} because he is using bot {bot_address}")
-
         error_response = client.post('/get_balance', data=dict(bad_argument='stam', address=ADDRESSES[0]))
         assert error_response.status == '400 BAD REQUEST'
         assert error_response.json == dict(
@@ -279,7 +218,6 @@ def test_webserver_errors():
                 status=400, error_name='ArgumentMismatch',
                 error_message=error_message)
 
-        error_response = client.get('/five_hundred')
         for reason in ['response', 'exception']:
             error_response = client.post('/five_hundred', data=dict(reason=reason))
             assert error_response.status == '500 INTERNAL SERVER ERROR'
@@ -298,11 +236,6 @@ def test_webserver_debug():
             status=200, safe=accounting.SAFE,
             wei_deposit_for_one_roller=accounting.WEI_DEPOSIT_FOR_ONE_ROLLER,
             wei_withdraw_for_one_roller=accounting.WEI_WITHDRAW_FOR_ONE_ROLLER)
-
-        bot_response = client.post('/get_bot', data=dict(player_address=ADDRESSES[0]))
-        assert bot_response.status == '200 OK'
-        assert bot_response.json == dict(status=200, bot=dict(
-            address=sorted(accounting.BOTS)[0], balance=accounting.BOT_INITIAL_FUND))
 
         balance_response = client.post('/get_balance', data=dict(address=ADDRESSES[0]))
         assert balance_response.status == '200 OK'

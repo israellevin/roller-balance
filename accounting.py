@@ -13,20 +13,8 @@ LOGGER = logging.getLogger('roller.accounting')
 WEI_DEPOSIT_FOR_ONE_ROLLER = 1*10**14  # 1/1000 ether, so a hundred will cost 0.01 eth.
 WEI_WITHDRAW_FOR_ONE_ROLLER = 7*10**13  # 7/10000 ether, so a hundred will withdraw 0.007 eth.
 REQUIRED_BLOCK_DEPTH = 10  # This is the required depth for accepting deposits and settling withdrawals.
-BOT_INITIAL_FUND = 1000
-BOT_TRANSFER_MAX = 50
-BOT_USAGE_MIN = 'INTERVAL 10 SECOND'
-BOT_USAGE_MAX = 'INTERVAL 10 MINUTE'
-BOTS = {
-    'dD2FD4581271e230360230F9337D5c0430Bf44C0': BOT_INITIAL_FUND,
-    '9873b417A5276ac533B51238C8E314BCCced2a1F': BOT_INITIAL_FUND,
-    '53993b1a1c6FB4714e9D02FaF9c72a0118e2F9FE': BOT_INITIAL_FUND}
 SAFE = os.environ.get('ROLLER_SAFE_ADDRESS')
 DEBUG = os.environ.get('ROLLER_DEBUG', 'false').lower() in ['true', 'yes', 'y', '1']
-
-
-class BotNotFound(Exception):
-    'No bot found to play with.'
 
 
 class InsufficientFunds(Exception):
@@ -53,80 +41,6 @@ def get_balance(address):
         return int(credit - debit)
 
 
-def update_bots():
-    'Update the balances of the BOTS global - a bot that exhausted its balance is removed from the list.'
-    # Using a global here because I think a singleton class in an overkill.
-    # pylint: disable=global-variable-not-assigned,global-statement
-    global BOTS
-    # pylint: enable=global-variable-not-assigned,global-statement
-    if not BOTS:
-        raise BotNotFound
-    new_bots = {}
-    for bot in BOTS:
-        balance = get_balance(bot)
-        if balance == 0:
-            LOGGER.warning(f"bot {bot} is out of funds")
-            continue
-        new_bots[bot] = balance
-    if new_bots != BOTS:
-        BOTS = new_bots
-    if not BOTS:
-        raise BotNotFound
-
-
-def get_bot(player_address):
-    'Get a bot to play with.'
-    update_bots()
-    with db.sql_connection() as sql:
-        # First make sure the player is not already holding a bot.
-        sql.execute(f"""SELECT bot_address FROM bots WHERE idx IN (
-            SELECT MAX(idx) FROM bots WHERE player_address = %(player_address)s
-        ) AND busy = 1 AND timestamp > (NOW() - {BOT_USAGE_MAX})""", dict(player_address=player_address))
-        try:
-            bot_address = sql.fetchone()['bot_address']
-            raise BotNotFound(f"bot not avaiable for {player_address} because he is using bot {bot_address}")
-        except (TypeError, KeyError):
-            pass
-
-        # Then find an avaiable bot.
-        if sql.execute(f"""INSERT INTO bots(bot_address, player_address, busy)
-            SELECT bot_address, %(player_address)s AS player_address, 1 as busy FROM
-                ({' UNION ALL '.join([f"SELECT %(bot_{bot})s AS bot_address" for bot in BOTS])}) AS bots
-            WHERE bot_address NOT IN(
-                SELECT bot_address FROM bots WHERE idx IN (SELECT MAX(idx) FROM bots GROUP BY bot_address)
-                AND busy = 1 AND timestamp > (NOW() - {BOT_USAGE_MAX})
-            ) ORDER BY bot_address LIMIT 1
-        """, dict({f"bot_{bot}": bot for bot in BOTS}, player_address=player_address)) != 1:
-            raise BotNotFound
-        sql.execute("SELECT bot_address FROM bots WHERE idx = %(row_id)s", dict(row_id=sql.lastrowid))
-        address = sql.fetchone()['bot_address']
-        return dict(address=address, balance=BOTS[address])
-
-
-def free_bot(source, target, amount, sql):
-    'Check if one of the transfer addresses belongs to a recognized bot, and if so if it was requested by the other.'
-    if source in BOTS:
-        if amount > BOT_TRANSFER_MAX:
-            raise InsufficientFunds(f"bot transfer of {amount} from {source} to {target} too big")
-        bot_address = source
-        player_address = target
-    elif target not in BOTS:
-        return
-    else:
-        bot_address = target
-        player_address = source
-    sql.execute(f"""
-        SELECT 1 FROM bots
-        WHERE timestamp > (NOW() - {BOT_USAGE_MAX}) AND timestamp < (NOW() - {BOT_USAGE_MIN})
-        AND bot_address = %(bot_address)s AND player_address = %(player_address)s
-    """, dict(bot_address=bot_address, player_address=player_address))
-    if sql.fetchone() is None:
-        raise BotNotFound(f"bot {bot_address} not avaiable for {player_address}")
-    sql.execute(
-        "INSERT INTO bots(bot_address, player_address, busy) VALUES(%(bot_address)s, %(player_address)s, 0)",
-        dict(bot_address=bot_address, player_address=player_address))
-
-
 def transfer_in_session(source, target, amount, sql):
     'Transfer rollers from source to target within a running session - no validaiton!'
     LOGGER.info(f"transfer {amount} from {source} to {target}")
@@ -141,7 +55,6 @@ def transfer(source, target, amount):
     if amount > get_balance(source):
         raise InsufficientFunds(f"address {source} has less than {amount} rollers")
     with db.sql_connection() as sql:
-        free_bot(source, target, amount, sql)
         return transfer_in_session(source, target, amount, sql)
 
 

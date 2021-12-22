@@ -46,8 +46,8 @@ if [ "$_test" ]; then
     echo -e "\n===  TESTING ===\n"
     ROLLER_DEBUG=1 ROLLER_DB_NAME="${ROLLER_DB_NAME}_test" pytest ./test.py \
         -vlx --log-cli-level=0 --cov . --cov-report term-missing
-    type pycodestyle && pycodestyle --max-line-length=120 migrations/*.py *.py
-    type pylint && pylint --max-line-length=120 migrations/*.py *.py
+    type pycodestyle && pycodestyle --max-line-length=120 *.py
+    type pylint && pylint *.py
 fi
 
 if [ "$cron" ]; then

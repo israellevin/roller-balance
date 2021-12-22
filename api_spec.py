@@ -26,20 +26,6 @@ GET_PRICES = {
     }
 }
 
-GET_BOT = {
-    'description': 'Get the address and balance of an available bot',
-    'parameters': [
-        {
-            'name': 'player_address', 'description': 'The address requesting a bot',
-            'in': 'formData', 'required': True, 'type': 'string'
-        }
-    ],
-    'responses': {
-        '200': {'description': 'Available bot details'},
-        '503': {'description': 'No bots available'}
-    }
-}
-
 GET_BALANCE = {
     'description': 'Get the roller balance of an ethereum address',
     'parameters': [

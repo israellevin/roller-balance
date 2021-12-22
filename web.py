@@ -118,8 +118,6 @@ def call(handler=None, required_arguments=None):
             response = dict(status=400, error_name=exception)
         except Unauthorized as exception:
             response = dict(status=403, error_name=exception)
-        except accounting.BotNotFound as exception:
-            response = dict(status=503, error_name=exception)
         except Exception as exception:
             LOGGER.exception(f"unexpected server exception on {flask.request.url}: {request}")
             response = dict(status=500, error_name=exception, stacktrace=traceback.format_exc().split('\n'))
@@ -148,14 +146,6 @@ def get_prices_handler():
 def get_balance_handler(address):
     'Get the balance of an address.'
     return dict(status=200, balance=accounting.get_balance(address))
-
-
-@APP.route("/get_bot", methods=['POST'])
-@flasgger.swag_from(api_spec.GET_BOT)
-@call(['player_address'])
-def get_bot_handler(player_address):
-    'Get an available bot for a player.'
-    return dict(status=200, bot=accounting.get_bot(player_address))
 
 
 @APP.route("/transfer", methods=['POST'])
